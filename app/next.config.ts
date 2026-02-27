@@ -2,13 +2,12 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  webpack: (config) => {
-    config.resolve.fallback = {
-      fs: false,
-      path: false,
-      os: false,
-    };
-    return config;
+  turbopack: {
+    resolveAlias: {
+      fs: { browser: './empty.ts' },
+      path: { browser: './empty.ts' },
+      os: { browser: './empty.ts' },
+    },
   },
 };
 
