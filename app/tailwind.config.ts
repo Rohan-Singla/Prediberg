@@ -7,18 +7,32 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        syne: ['var(--font-syne)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-dm-mono)', 'monospace'],
+      },
       colors: {
-        primary: {
-          50: '#f0f9ff',
-          100: '#e0f2fe',
-          200: '#bae6fd',
-          300: '#7dd3fc',
-          400: '#38bdf8',
-          500: '#0ea5e9',
-          600: '#0284c7',
-          700: '#0369a1',
-          800: '#075985',
-          900: '#0c4a6e',
+        void: '#06060D',
+        deep: '#090912',
+        card: '#0C0C1A',
+        elevated: '#101020',
+        cyan: '#00E5CC',
+        red: '#FF3D6B',
+        gold: '#F0C040',
+      },
+      animation: {
+        'slide-up': 'slideUp 0.5s ease-out forwards',
+        'fade-in': 'fadeIn 0.4s ease-out forwards',
+        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+      },
+      keyframes: {
+        slideUp: {
+          from: { opacity: '0', transform: 'translateY(16px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        fadeIn: {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
         },
       },
     },

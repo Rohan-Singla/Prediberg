@@ -2,25 +2,162 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --foreground: #171717;
-  --background: #ffffff;
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --foreground: #ededed;
-    --background: #0a0a0a;
+    /* Backgrounds */
+    --bg-void: #06060D;
+    --bg-deep: #090912;
+    --bg-card: #0C0C1A;
+    --bg-elevated: #101020;
+    --bg-hover: #141428;
+
+    /* Borders */
+    --border-subtle: #13132A;
+    --border-dim: #1E1E3C;
+    --border-accent: rgba(0, 229, 204, 0.28);
+
+    /* Accents */
+    --cyan: #00E5CC;
+    --cyan-dim: rgba(0, 229, 204, 0.07);
+    --cyan-glow: rgba(0, 229, 204, 0.22);
+    --red: #FF3D6B;
+    --red-dim: rgba(255, 61, 107, 0.07);
+    --gold: #F0C040;
+
+    /* Text */
+    --text-100: #F0F0FF;
+    --text-200: #9898C0;
+    --text-300: #6A6A98;
+    --text-400: #22223A;
+  }
+
+  html {
+    background: var(--bg-void);
+    color: var(--text-200);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  ::-webkit-scrollbar {
+    width: 3px;
+    height: 3px;
+  }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-dim);
+    border-radius: 2px;
+  }
+
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: system-ui, -apple-system, sans-serif;
+/* ─── Grain overlay ─── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  opacity: 0.028;
+  pointer-events: none;
+  z-index: 9999;
 }
 
-/* Solana wallet adapter styles override */
-.wallet-adapter-button {
-  @apply bg-primary-600 hover:bg-primary-700 rounded-lg;
+/* ─── Grid background ─── */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(0, 229, 204, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 204, 0.025) 1px, transparent 1px);
+  background-size: 52px 52px;
 }
+
+/* ─── Market card ─── */
+.market-card {
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+.market-card:hover {
+  border-color: var(--border-accent) !important;
+  transform: translateY(-2px);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 229, 204, 0.08);
+}
+
+/* ─── Prediction buttons ─── */
+.btn-yes {
+  background: linear-gradient(135deg, rgba(0, 229, 204, 0.14), rgba(0, 229, 204, 0.06));
+  border: 1px solid rgba(0, 229, 204, 0.28);
+  color: var(--cyan);
+  transition: all 0.18s ease;
+}
+.btn-yes:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0, 229, 204, 0.22), rgba(0, 229, 204, 0.12));
+  box-shadow: 0 0 18px rgba(0, 229, 204, 0.18);
+}
+.btn-yes.selected {
+  background: linear-gradient(135deg, rgba(0, 229, 204, 0.28), rgba(0, 229, 204, 0.16));
+  box-shadow: 0 0 24px rgba(0, 229, 204, 0.22), inset 0 0 0 1px rgba(0, 229, 204, 0.4);
+  border-color: rgba(0, 229, 204, 0.5);
+}
+
+.btn-no {
+  background: linear-gradient(135deg, rgba(255, 61, 107, 0.14), rgba(255, 61, 107, 0.06));
+  border: 1px solid rgba(255, 61, 107, 0.28);
+  color: var(--red);
+  transition: all 0.18s ease;
+}
+.btn-no:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(255, 61, 107, 0.22), rgba(255, 61, 107, 0.12));
+  box-shadow: 0 0 18px rgba(255, 61, 107, 0.18);
+}
+.btn-no.selected {
+  background: linear-gradient(135deg, rgba(255, 61, 107, 0.28), rgba(255, 61, 107, 0.16));
+  box-shadow: 0 0 24px rgba(255, 61, 107, 0.22), inset 0 0 0 1px rgba(255, 61, 107, 0.4);
+  border-color: rgba(255, 61, 107, 0.5);
+}
+
+/* ─── Wallet adapter overrides ─── */
+.wallet-adapter-button {
+  background: transparent !important;
+  border: 1px solid var(--border-dim) !important;
+  color: var(--text-200) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  border-radius: 7px !important;
+  padding: 8px 16px !important;
+  height: auto !important;
+  line-height: 1.4 !important;
+  transition: all 0.18s ease !important;
+  letter-spacing: 0.01em !important;
+}
+.wallet-adapter-button:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: var(--border-accent) !important;
+  color: var(--cyan) !important;
+}
+.wallet-adapter-button-trigger {
+  background: transparent !important;
+}
+.wallet-adapter-modal-wrapper {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-dim) !important;
+  border-radius: 16px !important;
+}
+.wallet-adapter-modal-title {
+  color: var(--text-100) !important;
+}
+
+/* ─── Stagger animation helper ─── */
+.stagger-child:nth-child(1) { animation-delay: 0ms; }
+.stagger-child:nth-child(2) { animation-delay: 60ms; }
+.stagger-child:nth-child(3) { animation-delay: 120ms; }
+.stagger-child:nth-child(4) { animation-delay: 180ms; }
+.stagger-child:nth-child(5) { animation-delay: 240ms; }
+.stagger-child:nth-child(6) { animation-delay: 300ms; }
