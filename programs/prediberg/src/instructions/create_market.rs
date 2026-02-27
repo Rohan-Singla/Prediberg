@@ -15,7 +15,10 @@ pub struct CreateMarketParams {
 #[derive(Accounts)]
 #[instruction(params: CreateMarketParams)]
 pub struct CreateMarket<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = creator.key() == protocol.authority @ PredibergError::Unauthorized
+    )]
     pub creator: Signer<'info>,
 
     #[account(

@@ -2,15 +2,27 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 
-const NAV = [
+const BASE_NAV = [
   { label: 'Markets', href: '/' },
   { label: 'Portfolio', href: '/portfolio' },
 ];
 
+const ADMIN_WALLET = process.env.NEXT_PUBLIC_ADMIN_WALLET ?? '';
+
 export function Header() {
   const pathname = usePathname();
+  const { publicKey } = useWallet();
+
+  const isAdmin =
+    ADMIN_WALLET === '' || publicKey?.toBase58() === ADMIN_WALLET;
+
+  const NAV = [
+    ...BASE_NAV,
+    ...(isAdmin ? [{ label: 'Admin', href: '/admin' }] : []),
+  ];
 
   return (
     <header
@@ -51,13 +63,21 @@ export function Header() {
                 key={item.href}
                 href={item.href}
                 className="relative px-4 py-1.5 text-sm font-medium rounded-md transition-all"
-                style={{
-                  color: active ? 'var(--text-100)' : 'var(--text-300)',
-                  background: active ? 'rgba(255,255,255,0.05)' : 'transparent',
-                }}
+                style={
+                  item.href === '/admin'
+                    ? {
+                        color: active ? 'var(--gold)' : 'rgba(240,192,64,0.5)',
+                        background: active ? 'rgba(240,192,64,0.07)' : 'transparent',
+                        border: '1px solid rgba(240,192,64,0.15)',
+                      }
+                    : {
+                        color: active ? 'var(--text-100)' : 'var(--text-300)',
+                        background: active ? 'rgba(255,255,255,0.05)' : 'transparent',
+                      }
+                }
               >
                 {item.label}
-                {active && (
+                {active && item.href !== '/admin' && (
                   <span
                     className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-px"
                     style={{ background: 'var(--cyan)', boxShadow: '0 0 6px var(--cyan)' }}

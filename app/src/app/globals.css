@@ -27,13 +27,14 @@
     /* Text */
     --text-100: #F0F0FF;
     --text-200: #9898C0;
-    --text-300: #6A6A98;
+    --text-300: #cfcfcf;
     --text-400: #22223A;
   }
 
   html {
     background: var(--bg-void);
     color: var(--text-200);
+    font-size: 17px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
