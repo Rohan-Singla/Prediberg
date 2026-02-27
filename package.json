@@ -6,9 +6,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter app dev",
-    "test": "anchor test",
+    "test": "pnpm --filter @prediberg/chain test",
     "lint": "pnpm -r lint",
-    "clean": "pnpm -r clean && rm -rf target"
+    "clean": "pnpm -r clean && rm -rf chain/target"
   },
   "keywords": [
     "solana",
@@ -19,8 +19,6 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@coral-xyz/anchor": "^0.30.1",
-    "@solana/web3.js": "^1.95.0",
     "typescript": "^5.4.0"
   }
 }
