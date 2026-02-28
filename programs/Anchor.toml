@@ -6,19 +6,19 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-prediberg = "65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait"
+prediberg = "ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5"
 
 [programs.devnet]
-prediberg = "65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait"
+prediberg = "ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5"
 
 [programs.mainnet]
-prediberg = "65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait"
+prediberg = "ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

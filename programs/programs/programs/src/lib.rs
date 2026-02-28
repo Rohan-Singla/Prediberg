@@ -7,7 +7,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait");
+declare_id!("ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5");
 
 #[program]
 pub mod prediberg {
