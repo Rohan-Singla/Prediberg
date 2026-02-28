@@ -54,16 +54,14 @@ pub fn handler(ctx: Context<ClaimWinnings>) -> Result<()> {
     let position = &mut ctx.accounts.position;
     let protocol = &ctx.accounts.protocol;
 
-    // Validate market is resolved
     require!(market.status == MarketStatus::Resolved, PredibergError::MarketNotActive);
 
-    // Validate position is winning and not claimed
     let winning = market.winning_outcome.ok_or(PredibergError::MarketNotActive)?;
     require!(position.outcome == winning, PredibergError::NoWinnings);
     require!(!position.claimed, PredibergError::NoWinnings);
     require!(position.amount > 0, PredibergError::NoWinnings);
 
-    // Calculate winnings: (position_amount / winning_total) * total_liquidity
+    // payout = user's share of the entire pool, minus protocol fee
     let winning_total = market.outcome_totals[winning as usize];
     let payout = (position.amount as u128)
         .checked_mul(market.total_liquidity as u128)
@@ -71,7 +69,6 @@ pub fn handler(ctx: Context<ClaimWinnings>) -> Result<()> {
         .checked_div(winning_total as u128)
         .ok_or(PredibergError::Overflow)? as u64;
 
-    // Deduct protocol fee
     let fee = (payout as u128)
         .checked_mul(protocol.fee_bps as u128)
         .ok_or(PredibergError::Overflow)?
@@ -80,7 +77,6 @@ pub fn handler(ctx: Context<ClaimWinnings>) -> Result<()> {
 
     let net_payout = payout.checked_sub(fee).ok_or(PredibergError::Overflow)?;
 
-    // Transfer winnings from vault
     let market_id = market.id.to_le_bytes();
     let seeds = &[
         MARKET_SEED,
@@ -104,7 +100,6 @@ pub fn handler(ctx: Context<ClaimWinnings>) -> Result<()> {
         ctx.accounts.collateral_mint.decimals,
     )?;
 
-    // Mark as claimed
     position.claimed = true;
 
     msg!("Claimed {} (fee: {})", net_payout, fee);

@@ -56,20 +56,11 @@ pub fn handler(ctx: Context<PlacePrediction>, params: PlacePredictionParams) -> 
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
 
-    // Validate market is active
     require!(market.status == MarketStatus::Active, PredibergError::MarketNotActive);
     require!(clock.unix_timestamp < market.end_time, PredibergError::MarketEnded);
-
-    // Validate outcome
-    require!(
-        (params.outcome as usize) < market.outcomes.len(),
-        PredibergError::InvalidOutcome
-    );
-
-    // Validate amount
+    require!((params.outcome as usize) < market.outcomes.len(), PredibergError::InvalidOutcome);
     require!(params.amount > 0, PredibergError::InvalidAmount);
 
-    // Transfer collateral to vault
     transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
@@ -84,13 +75,11 @@ pub fn handler(ctx: Context<PlacePrediction>, params: PlacePredictionParams) -> 
         ctx.accounts.collateral_mint.decimals,
     )?;
 
-    // Update market totals
     market.total_liquidity = market.total_liquidity.checked_add(params.amount).ok_or(PredibergError::Overflow)?;
     market.outcome_totals[params.outcome as usize] = market.outcome_totals[params.outcome as usize]
         .checked_add(params.amount)
         .ok_or(PredibergError::Overflow)?;
 
-    // Update position
     let position = &mut ctx.accounts.position;
     if position.amount == 0 {
         position.market = market.key();
@@ -101,10 +90,6 @@ pub fn handler(ctx: Context<PlacePrediction>, params: PlacePredictionParams) -> 
     }
     position.amount = position.amount.checked_add(params.amount).ok_or(PredibergError::Overflow)?;
 
-    msg!(
-        "Prediction placed: {} tokens on outcome {}",
-        params.amount,
-        params.outcome
-    );
+    msg!("{} on outcome {}", params.amount, params.outcome);
     Ok(())
 }

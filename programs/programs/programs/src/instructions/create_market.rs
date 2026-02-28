@@ -37,7 +37,6 @@ pub struct CreateMarket<'info> {
     )]
     pub market: Account<'info, Market>,
 
-    /// Collateral mint (e.g., USDC)
     pub collateral_mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -57,16 +56,13 @@ pub struct CreateMarket<'info> {
 
 pub fn handler(ctx: Context<CreateMarket>, params: CreateMarketParams) -> Result<()> {
     let clock = Clock::get()?;
-    let current_time = clock.unix_timestamp;
+    let now = clock.unix_timestamp;
 
-    // Validate duration
-    let duration = params.end_time.checked_sub(current_time).ok_or(PredibergError::Overflow)?;
+    let duration = params.end_time.checked_sub(now).ok_or(PredibergError::Overflow)?;
     require!(
         duration >= MIN_MARKET_DURATION && duration <= MAX_MARKET_DURATION,
         PredibergError::InvalidDuration
     );
-
-    // Validate outcomes
     require!(
         params.outcomes.len() >= 2 && params.outcomes.len() <= MAX_OUTCOMES,
         PredibergError::TooManyOutcomes
@@ -90,7 +86,7 @@ pub fn handler(ctx: Context<CreateMarket>, params: CreateMarketParams) -> Result
     market.collateral_mint = ctx.accounts.collateral_mint.key();
     market.vault = ctx.accounts.vault.key();
     market.bump = ctx.bumps.market;
-    market.created_at = current_time;
+    market.created_at = now;
 
     protocol.total_markets = protocol.total_markets.checked_add(1).ok_or(PredibergError::Overflow)?;
 

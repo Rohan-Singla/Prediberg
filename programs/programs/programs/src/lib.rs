@@ -13,17 +13,14 @@ declare_id!("ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5");
 pub mod prediberg {
     use super::*;
 
-    /// Initialize the protocol configuration
     pub fn initialize(ctx: Context<Initialize>, config: InitializeConfig) -> Result<()> {
         instructions::initialize::handler(ctx, config)
     }
 
-    /// Create a new prediction market
     pub fn create_market(ctx: Context<CreateMarket>, params: CreateMarketParams) -> Result<()> {
         instructions::create_market::handler(ctx, params)
     }
 
-    /// Place a prediction (buy outcome tokens)
     pub fn place_prediction(
         ctx: Context<PlacePrediction>,
         params: PlacePredictionParams,
@@ -31,7 +28,6 @@ pub mod prediberg {
         instructions::place_prediction::handler(ctx, params)
     }
 
-    /// Resolve market outcome (oracle only)
     pub fn resolve_market(
         ctx: Context<ResolveMarket>,
         params: ResolveMarketParams,
@@ -39,9 +35,7 @@ pub mod prediberg {
         instructions::resolve_market::handler(ctx, params)
     }
 
-    /// Claim winnings after market resolution
     pub fn claim_winnings(ctx: Context<ClaimWinnings>) -> Result<()> {
         instructions::claim_winnings::handler(ctx)
     }
 }
-

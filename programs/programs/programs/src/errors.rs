@@ -2,45 +2,32 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum PredibergError {
-    #[msg("Unauthorized access")]
+    #[msg("Unauthorized")]
     Unauthorized,
-
-    #[msg("Market is not active")]
+    #[msg("Market not active")]
     MarketNotActive,
-
-    #[msg("Market has already been resolved")]
+    #[msg("Market already resolved")]
     MarketAlreadyResolved,
-
     #[msg("Market has not ended yet")]
     MarketNotEnded,
-
-    #[msg("Market end time has passed")]
+    #[msg("Market ended")]
     MarketEnded,
-
-    #[msg("Invalid outcome index")]
+    #[msg("Invalid outcome")]
     InvalidOutcome,
-
-    #[msg("Invalid market duration")]
+    #[msg("Invalid duration")]
     InvalidDuration,
-
     #[msg("Insufficient funds")]
     InsufficientFunds,
-
     #[msg("Invalid amount")]
     InvalidAmount,
-
-    #[msg("Resolution window has expired")]
+    #[msg("Resolution window expired")]
     ResolutionWindowExpired,
-
-    #[msg("No winnings to claim")]
+    #[msg("Nothing to claim")]
     NoWinnings,
-
     #[msg("Too many outcomes")]
     TooManyOutcomes,
-
-    #[msg("Arithmetic overflow")]
+    #[msg("Overflow")]
     Overflow,
-
     #[msg("Invalid oracle signature")]
     InvalidOracleSignature,
 }

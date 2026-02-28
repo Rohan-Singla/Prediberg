@@ -27,7 +27,6 @@ pub struct Initialize<'info> {
 
 pub fn handler(ctx: Context<Initialize>, config: InitializeConfig) -> Result<()> {
     let protocol = &mut ctx.accounts.protocol;
-
     protocol.authority = ctx.accounts.authority.key();
     protocol.oracle = config.oracle;
     protocol.treasury = config.treasury;
