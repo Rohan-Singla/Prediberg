@@ -7,7 +7,7 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait");
 
 #[program]
 pub mod prediberg {
@@ -44,3 +44,4 @@ pub mod prediberg {
         instructions::claim_winnings::handler(ctx)
     }
 }
+

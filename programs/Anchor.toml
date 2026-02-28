@@ -1,15 +1,18 @@
+[toolchain]
+anchor_version = "0.31.1"
+
 [features]
 resolution = true
 skip-lint = false
 
 [programs.localnet]
-prediberg = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+prediberg = "65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait"
 
 [programs.devnet]
-prediberg = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+prediberg = "65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait"
 
 [programs.mainnet]
-prediberg = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+prediberg = "65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait"
 
 [registry]
 url = "https://api.apr.dev"
@@ -19,7 +22,7 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "pnpm ts-mocha -p ./tsconfig.json -t 1000000 'tests/**/*.ts'"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test]
 startup_wait = 5000

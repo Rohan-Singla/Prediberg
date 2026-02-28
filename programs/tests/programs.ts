@@ -1,12 +1,3 @@
-/**
- * Prediberg Program — Full Test Suite
- *
- * Uses solana-bankrun for all tests so we can manipulate the clock for
- * time-sensitive instructions (resolve_market, claim_winnings).
- *
- * Run:  anchor test
- */
-
 import * as anchor from '@coral-xyz/anchor';
 import { BN, Program } from '@coral-xyz/anchor';
 import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -21,18 +12,14 @@ import { startAnchor, BanksClient, ProgramTestContext, Clock } from 'solana-bank
 import { BankrunProvider } from 'anchor-bankrun';
 import { expect } from 'chai';
 
-// Generated after `anchor build` — swap `any` for `Program<Prediberg>`
 type PredibergProgram = Program<any>;
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const PROGRAM_ID = new PublicKey('Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS');
+const PROGRAM_ID = new PublicKey('65y5sBTQ8rfth35N1qmH57z1s6JrhNevGTFfiTV6kait');
 const TOKEN_DECIMALS = 6;
 const INITIAL_BALANCE = 10_000 * 10 ** TOKEN_DECIMALS; // 10,000 USDC per user
 const ONE_HOUR = 3600;
 const ONE_DAY = 86_400;
 
-// ─── PDA helpers ──────────────────────────────────────────────────────────────
 
 function protocolPda() {
   return PublicKey.findProgramAddressSync([Buffer.from('protocol')], PROGRAM_ID);
@@ -58,7 +45,6 @@ function positionPda(market: PublicKey, user: PublicKey, outcome: number) {
   );
 }
 
-// ─── Utility helpers ──────────────────────────────────────────────────────────
 
 /** Expects a transaction to fail. Optionally asserts the error message contains `code`. */
 async function expectFail(fn: () => Promise<unknown>, code?: string) {
@@ -94,7 +80,6 @@ async function now(context: ProgramTestContext): Promise<number> {
   return Number(clock.unixTimestamp);
 }
 
-// ─── Shared test fixtures ─────────────────────────────────────────────────────
 
 let context: ProgramTestContext;
 let provider: BankrunProvider;
@@ -112,7 +97,6 @@ let userAToken: PublicKey;
 let userBToken: PublicKey;
 let strangerToken: PublicKey;
 
-// ─── Global setup ─────────────────────────────────────────────────────────────
 
 before('boot bankrun + create mint + fund wallets', async () => {
   context = await startAnchor(
@@ -170,10 +154,6 @@ before('boot bankrun + create mint + fund wallets', async () => {
   }
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 1. INITIALIZE
-// ═════════════════════════════════════════════════════════════════════════════
-
 describe('initialize', () => {
   it('✅ sets authority, oracle, treasury and default fee of 100 bps', async () => {
     const [protocol] = protocolPda();
@@ -213,10 +193,6 @@ describe('initialize', () => {
     );
   });
 });
-
-// ═════════════════════════════════════════════════════════════════════════════
-// 2. CREATE MARKET
-// ═════════════════════════════════════════════════════════════════════════════
 
 describe('create_market', () => {
   async function createMarket(params: {
@@ -363,11 +339,6 @@ describe('create_market', () => {
     );
   });
 });
-
-// ═════════════════════════════════════════════════════════════════════════════
-// 3. PLACE PREDICTION
-// We use market #0 created in the create_market suite (YES/NO, BTC market).
-// ═════════════════════════════════════════════════════════════════════════════
 
 describe('place_prediction', () => {
   const MARKET_ID = 0;
@@ -549,14 +520,9 @@ describe('place_prediction', () => {
     );
 
     // Warp back to just before end for next test group
-    // (bankrun clock stays, other suites create fresh markets)
   });
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 4. RESOLVE MARKET
-// Clock is now past market #0 end_time from the last place_prediction test.
-// ═════════════════════════════════════════════════════════════════════════════
 
 describe('resolve_market', () => {
   const MARKET_ID = 0;
@@ -610,7 +576,6 @@ describe('resolve_market', () => {
   });
 
   it('❌ oracle cannot resolve before market end_time (fresh market)', async () => {
-    // Create a fresh market that is still active
     const [protocol] = protocolPda();
     const state = await program.account.protocol.fetch(protocol);
     const id = state.totalMarkets.toNumber();
@@ -649,7 +614,6 @@ describe('resolve_market', () => {
   });
 
   it('❌ resolution window expiry is enforced (24 h after end_time)', async () => {
-    // Use the fresh market created in the previous test (last ID)
     const [protocol] = protocolPda();
     const state = await program.account.protocol.fetch(protocol);
     const id = state.totalMarkets.toNumber() - 1; // last created
@@ -672,13 +636,6 @@ describe('resolve_market', () => {
   });
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 5. CLAIM WINNINGS
-// Market #0 is resolved with YES as winner.
-// userA: 1,200 USDC on YES   userB: 500 USDC on NO
-// total liquidity: 1,700 USDC
-// ═════════════════════════════════════════════════════════════════════════════
-
 describe('claim_winnings', () => {
   const MARKET_ID = 0;
   const YES = 0;
@@ -688,11 +645,11 @@ describe('claim_winnings', () => {
   // gross = (1200 / 1200) * 1700 = 1700 USDC
   // fee   = 1700 * 1% = 17 USDC
   // net   = 1683 USDC
-  const BET_A_TOTAL = (1_000 + 200) * 10 ** TOKEN_DECIMALS; // 1,200
-  const TOTAL_LIQ = (1_000 + 200 + 500) * 10 ** TOKEN_DECIMALS; // 1,700
-  const GROSS = Math.floor((BET_A_TOTAL * TOTAL_LIQ) / BET_A_TOTAL); // 1,700,000,000
-  const FEE = Math.floor((GROSS * 100) / 10_000); // 17,000,000
-  const NET = GROSS - FEE; // 1,683,000,000
+  const BET_A_TOTAL = (1_000 + 200) * 10 ** TOKEN_DECIMALS; 
+  const TOTAL_LIQ = (1_000 + 200 + 500) * 10 ** TOKEN_DECIMALS; 
+  const GROSS = Math.floor((BET_A_TOTAL * TOTAL_LIQ) / BET_A_TOTAL); 
+  const FEE = Math.floor((GROSS * 100) / 10_000); 
+  const NET = GROSS - FEE; 
 
   async function claim(user: Keypair, userToken: PublicKey, outcome: number) {
     const [protocol] = protocolPda();
@@ -731,14 +688,11 @@ describe('claim_winnings', () => {
   });
 
   it('✅ 1% protocol fee is deducted from gross payout', async () => {
-    // Verify by checking vault balance — it should have decreased by NET (fee stays in vault
-    // until treasury claims, or vault balance = 0 when there's only one winner)
     const [market] = marketPda(MARKET_ID);
     const [vault] = vaultPda(market);
     const vaultBalance = await getAccount(
       provider.connection, vault, 'confirmed', TOKEN_2022_PROGRAM_ID,
     );
-    // userA was the only winner; vault should hold exactly the fee amount
     expect(Number(vaultBalance.amount)).to.equal(FEE);
   });
 
@@ -764,10 +718,8 @@ describe('claim_winnings', () => {
   });
 
   it('❌ cannot claim from an unresolved market', async () => {
-    // Use the most recently created active market
     const [protocol] = protocolPda();
     const state = await program.account.protocol.fetch(protocol);
-    // Create a fresh active market for this test
     const id = state.totalMarkets.toNumber();
     const [market] = marketPda(id);
     const [vault] = vaultPda(market);
@@ -791,7 +743,6 @@ describe('claim_winnings', () => {
       .signers([authority])
       .rpc();
 
-    // Place a prediction so the position exists
     const [position] = positionPda(market, userA.publicKey, 0);
     await program.methods
       .placePrediction({ outcome: 0, amount: new BN(100 * 10 ** TOKEN_DECIMALS) })
