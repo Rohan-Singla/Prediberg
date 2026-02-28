@@ -1,25 +1,26 @@
 import anchor from '@coral-xyz/anchor';
 const { BN, Program } = anchor;
-import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import {
-  createMint,
-  createAssociatedTokenAccount,
-  mintTo,
+  PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL, Transaction,
+} from '@solana/web3.js';
+import {
   getAccount,
   TOKEN_2022_PROGRAM_ID,
+  createInitializeMintInstruction,
+  createAssociatedTokenAccountInstruction,
+  createMintToInstruction,
+  getAssociatedTokenAddressSync,
+  getMintLen,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { startAnchor, ProgramTestContext, Clock } from 'solana-bankrun';
 import { BankrunProvider } from 'anchor-bankrun';
 import { expect } from 'chai';
 
-type PredibergProgram = Program<any>;
-
 const PROGRAM_ID = new PublicKey('ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5');
 const TOKEN_DECIMALS = 6;
 const INITIAL_BALANCE = 10_000 * 10 ** TOKEN_DECIMALS;
 const ONE_HOUR = 3600;
-const ONE_DAY = 86_400;
-
 
 function protocolPda() {
   return PublicKey.findProgramAddressSync([Buffer.from('protocol')], PROGRAM_ID);
@@ -44,7 +45,6 @@ function positionPda(market: PublicKey, user: PublicKey, outcome: number) {
     PROGRAM_ID,
   );
 }
-
 
 async function expectFail(fn: () => Promise<unknown>, code?: string) {
   try {
@@ -80,7 +80,7 @@ async function now(context: ProgramTestContext): Promise<number> {
 
 let context: ProgramTestContext;
 let provider: BankrunProvider;
-let program: PredibergProgram;
+let program: Program<any>;
 
 const authority = Keypair.generate();
 const oracle = Keypair.generate();
@@ -98,7 +98,7 @@ let strangerToken: PublicKey;
 before(async () => {
   context = await startAnchor(
     '',
-    [{ name: 'prediberg', programId: PROGRAM_ID }],
+    [],
     [authority, oracle, treasury, userA, userB, stranger].map((kp) => ({
       address: kp.publicKey,
       info: {
@@ -112,31 +112,70 @@ before(async () => {
 
   provider = new BankrunProvider(context);
   anchor.setProvider(provider);
-  program = anchor.workspace.Prediberg as PredibergProgram;
+  program = anchor.workspace.Prediberg as Program<any>;
 
-  const conn = provider.connection;
+  const client = context.banksClient;
+  const payer = authority;
 
-  collateralMint = await createMint(
-    conn, authority, authority.publicKey, null,
-    TOKEN_DECIMALS, undefined, undefined, TOKEN_2022_PROGRAM_ID,
+  // create Token-2022 mint
+  const mintKp = Keypair.generate();
+  collateralMint = mintKp.publicKey;
+  const mintSpace = getMintLen([]);
+  const mintRent = await client.getRent();
+  const mintLamports = Number(mintRent.minimumBalance(BigInt(mintSpace)));
+
+  const createMintTx = new Transaction();
+  createMintTx.recentBlockhash = context.lastBlockhash;
+  createMintTx.feePayer = payer.publicKey;
+  createMintTx.add(
+    SystemProgram.createAccount({
+      fromPubkey: payer.publicKey,
+      newAccountPubkey: collateralMint,
+      space: mintSpace,
+      lamports: mintLamports,
+      programId: TOKEN_2022_PROGRAM_ID,
+    }),
+    createInitializeMintInstruction(
+      collateralMint, TOKEN_DECIMALS, payer.publicKey, null, TOKEN_2022_PROGRAM_ID,
+    ),
   );
+  createMintTx.sign(payer, mintKp);
+  await client.processTransaction(createMintTx);
 
-  for (const [kp, ref] of [
-    [userA, 'userAToken'],
-    [userB, 'userBToken'],
-    [stranger, 'strangerToken'],
+  // create ATAs and mint tokens for each user
+  for (const [kp, label] of [
+    [userA, 'A'],
+    [userB, 'B'],
+    [stranger, 'S'],
   ] as const) {
-    const ata = await createAssociatedTokenAccount(
-      conn, authority, collateralMint, kp.publicKey,
-      undefined, TOKEN_2022_PROGRAM_ID,
+    const ata = getAssociatedTokenAddressSync(
+      collateralMint, kp.publicKey, false, TOKEN_2022_PROGRAM_ID,
     );
-    await mintTo(
-      conn, authority, collateralMint, ata,
-      authority.publicKey, INITIAL_BALANCE, [],
-      undefined, TOKEN_2022_PROGRAM_ID,
+
+    const createAtaTx = new Transaction();
+    createAtaTx.recentBlockhash = context.lastBlockhash;
+    createAtaTx.feePayer = payer.publicKey;
+    createAtaTx.add(
+      createAssociatedTokenAccountInstruction(
+        payer.publicKey, ata, kp.publicKey, collateralMint, TOKEN_2022_PROGRAM_ID,
+      ),
     );
-    if (ref === 'userAToken') userAToken = ata;
-    else if (ref === 'userBToken') userBToken = ata;
+    createAtaTx.sign(payer);
+    await client.processTransaction(createAtaTx);
+
+    const mintToTx = new Transaction();
+    mintToTx.recentBlockhash = context.lastBlockhash;
+    mintToTx.feePayer = payer.publicKey;
+    mintToTx.add(
+      createMintToInstruction(
+        collateralMint, ata, payer.publicKey, INITIAL_BALANCE, [], TOKEN_2022_PROGRAM_ID,
+      ),
+    );
+    mintToTx.sign(payer);
+    await client.processTransaction(mintToTx);
+
+    if (label === 'A') userAToken = ata;
+    else if (label === 'B') userBToken = ata;
     else strangerToken = ata;
   }
 });
@@ -234,7 +273,7 @@ describe('create_market', () => {
     expect(state.status).to.deep.equal({ active: {} });
     expect(state.winningOutcome).to.be.null;
     expect(state.totalLiquidity.toNumber()).to.equal(0);
-    expect(state.outcomeTotals.map((t: BN) => t.toNumber())).to.deep.equal([0, 0]);
+    expect(state.outcomeTotals.map((t: any) => t.toNumber())).to.deep.equal([0, 0]);
     expect(state.collateralMint.toString()).to.equal(collateralMint.toString());
   });
 
@@ -620,8 +659,8 @@ describe('claim_winnings', () => {
   const YES = 0;
   const NO = 1;
 
-  // userA put 1200 USDC on YES, userB put 500 on NO => pool = 1700
-  // gross = (1200/1200) * 1700 = 1700, fee = 17, net = 1683
+  // userA: 1200 USDC on YES, userB: 500 on NO, pool = 1700
+  // gross = (1200/1200)*1700 = 1700, fee = 17, net = 1683
   const BET_A_TOTAL = (1_000 + 200) * 10 ** TOKEN_DECIMALS;
   const TOTAL_LIQ = (1_000 + 200 + 500) * 10 ** TOKEN_DECIMALS;
   const GROSS = Math.floor((BET_A_TOTAL * TOTAL_LIQ) / BET_A_TOTAL);

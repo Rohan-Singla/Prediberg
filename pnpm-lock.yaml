@@ -149,6 +149,9 @@ importers:
       solana-bankrun:
         specifier: ^0.4.0
         version: 0.4.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      solana-bankrun-linux-x64-gnu:
+        specifier: 0.4.0
+        version: 0.4.0
     devDependencies:
       '@types/bn.js':
         specifier: ^5.1.0
@@ -14037,8 +14040,7 @@ snapshots:
   solana-bankrun-darwin-x64@0.4.0:
     optional: true
 
-  solana-bankrun-linux-x64-gnu@0.4.0:
-    optional: true
+  solana-bankrun-linux-x64-gnu@0.4.0: {}
 
   solana-bankrun-linux-x64-musl@0.4.0:
     optional: true
