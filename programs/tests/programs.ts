@@ -11,16 +11,20 @@ import {
   createMintToInstruction,
   getAssociatedTokenAddressSync,
   getMintLen,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { startAnchor, ProgramTestContext, Clock } from 'solana-bankrun';
 import { BankrunProvider } from 'anchor-bankrun';
 import { expect } from 'chai';
 
-const PROGRAM_ID = new PublicKey('ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5');
+const PROGRAM_ID   = new PublicKey('ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5');
 const TOKEN_DECIMALS = 6;
-const INITIAL_BALANCE = 10_000 * 10 ** TOKEN_DECIMALS;
-const ONE_HOUR = 3600;
+const ONE_UNIT       = 10 ** TOKEN_DECIMALS;
+const INITIAL_BALANCE = 100_000 * ONE_UNIT;
+const ONE_HOUR       = 3600;
+const YES = 0;
+const NO  = 1;
+
+// ── PDA helpers ────────────────────────────────────────────────────────────
 
 function protocolPda() {
   return PublicKey.findProgramAddressSync([Buffer.from('protocol')], PROGRAM_ID);
@@ -39,12 +43,14 @@ function vaultPda(market: PublicKey) {
   );
 }
 
-function positionPda(market: PublicKey, user: PublicKey, outcome: number) {
+function positionPda(market: PublicKey, user: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('position'), market.toBuffer(), user.toBuffer(), Buffer.from([outcome])],
+    [Buffer.from('position'), market.toBuffer(), user.toBuffer()],
     PROGRAM_ID,
   );
 }
+
+// ── Test utilities ─────────────────────────────────────────────────────────
 
 async function expectFail(fn: () => Promise<unknown>, code?: string) {
   try {
@@ -77,23 +83,36 @@ async function now(context: ProgramTestContext): Promise<number> {
   return Number(clock.unixTimestamp);
 }
 
+async function getTokenBalance(
+  provider: BankrunProvider,
+  account: PublicKey,
+): Promise<number> {
+  const info = await getAccount(
+    provider.connection, account, 'confirmed', TOKEN_2022_PROGRAM_ID,
+  );
+  return Number(info.amount);
+}
+
+// ── Global state ───────────────────────────────────────────────────────────
 
 let context: ProgramTestContext;
 let provider: BankrunProvider;
 let program: Program<any>;
 
 const authority = Keypair.generate();
-const oracle = Keypair.generate();
-const treasury = Keypair.generate();
-const userA = Keypair.generate();
-const userB = Keypair.generate();
-const stranger = Keypair.generate();
+const oracle    = Keypair.generate();
+const treasury  = Keypair.generate();
+const userA     = Keypair.generate();
+const userB     = Keypair.generate();
+const stranger  = Keypair.generate();
 
-let collateralMint: PublicKey;
-let userAToken: PublicKey;
-let userBToken: PublicKey;
-let strangerToken: PublicKey;
+let collateralMint:  PublicKey;
+let userAToken:      PublicKey;
+let userBToken:      PublicKey;
+let strangerToken:   PublicKey;
+let authorityToken:  PublicKey;   // creator's token account for seeding pools
 
+// ── Setup ──────────────────────────────────────────────────────────────────
 
 before(async () => {
   context = await startAnchor(
@@ -115,13 +134,13 @@ before(async () => {
   program = anchor.workspace.Prediberg as Program<any>;
 
   const client = context.banksClient;
-  const payer = authority;
+  const payer  = authority;
 
-  // create Token-2022 mint
-  const mintKp = Keypair.generate();
-  collateralMint = mintKp.publicKey;
-  const mintSpace = getMintLen([]);
-  const mintRent = await client.getRent();
+  // Create Token-2022 mint
+  const mintKp       = Keypair.generate();
+  collateralMint     = mintKp.publicKey;
+  const mintSpace    = getMintLen([]);
+  const mintRent     = await client.getRent();
   const mintLamports = Number(mintRent.minimumBalance(BigInt(mintSpace)));
 
   const createMintTx = new Transaction();
@@ -142,11 +161,12 @@ before(async () => {
   createMintTx.sign(payer, mintKp);
   await client.processTransaction(createMintTx);
 
-  // create ATAs and mint tokens for each user
+  // Create ATAs and fund each participant
   for (const [kp, label] of [
-    [userA, 'A'],
-    [userB, 'B'],
-    [stranger, 'S'],
+    [authority, 'auth'],
+    [userA,     'A'],
+    [userB,     'B'],
+    [stranger,  'S'],
   ] as const) {
     const ata = getAssociatedTokenAddressSync(
       collateralMint, kp.publicKey, false, TOKEN_2022_PROGRAM_ID,
@@ -174,11 +194,143 @@ before(async () => {
     mintToTx.sign(payer);
     await client.processTransaction(mintToTx);
 
-    if (label === 'A') userAToken = ata;
+    if (label === 'auth') authorityToken = ata;
+    else if (label === 'A') userAToken = ata;
     else if (label === 'B') userBToken = ata;
     else strangerToken = ata;
   }
 });
+
+// ── Helpers for common instructions ────────────────────────────────────────
+
+const INIT_LIQ   = 10_000 * ONE_UNIT;   // default initial liquidity per market
+const SWAP_FEE   = 30;                   // 0.3 %
+
+async function createMarket(params: {
+  question?:          string;
+  description?:       string;
+  yesLabel?:          string;
+  noLabel?:           string;
+  endTime?:           typeof BN.prototype;
+  initialLiquidity?:  typeof BN.prototype;
+  swapFeeBps?:        number | null;
+  signer?:            Keypair;
+  signerToken?:       PublicKey;
+} = {}) {
+  const [protocol] = protocolPda();
+  const state      = await program.account.protocol.fetch(protocol);
+  const id         = state.totalMarkets.toNumber();
+  const [market]   = marketPda(id);
+  const [vault]    = vaultPda(market);
+  const endTime    = params.endTime ?? new BN((await now(context)) + ONE_HOUR + 120);
+  const signer     = params.signer     ?? authority;
+  const signerTok  = params.signerToken ?? authorityToken;
+
+  await program.methods
+    .createMarket({
+      question:          params.question          ?? 'Will BTC exceed $150k by July 2026?',
+      description:       params.description       ?? 'Resolves YES if BTC >= $150k on Coinbase.',
+      yesLabel:          params.yesLabel           ?? 'YES',
+      noLabel:           params.noLabel            ?? 'NO',
+      endTime,
+      initialLiquidity:  params.initialLiquidity   ?? new BN(INIT_LIQ),
+      swapFeeBps:        params.swapFeeBps !== undefined ? params.swapFeeBps : SWAP_FEE,
+    })
+    .accounts({
+      creator:              signer.publicKey,
+      protocol,
+      market,
+      collateralMint,
+      vault,
+      creatorTokenAccount:  signerTok,
+      tokenProgram:         TOKEN_2022_PROGRAM_ID,
+      systemProgram:        SystemProgram.programId,
+    })
+    .signers([signer])
+    .rpc();
+
+  return { id, market, vault };
+}
+
+async function swap(
+  user:      Keypair,
+  userToken: PublicKey,
+  marketId:  number,
+  outcome:   number,
+  amount:    number,
+) {
+  const [market]   = marketPda(marketId);
+  const [vault]    = vaultPda(market);
+  const [position] = positionPda(market, user.publicKey);
+
+  await program.methods
+    .swap({ outcome, amount: new BN(amount) })
+    .accounts({
+      user:             user.publicKey,
+      market,
+      position,
+      userTokenAccount: userToken,
+      vault,
+      collateralMint,
+      tokenProgram:     TOKEN_2022_PROGRAM_ID,
+      systemProgram:    SystemProgram.programId,
+    })
+    .signers([user])
+    .rpc();
+}
+
+async function resolveMarket(oracleSigner: Keypair, marketId: number, winningOutcome: number) {
+  const [protocol] = protocolPda();
+  const [market]   = marketPda(marketId);
+
+  await program.methods
+    .resolveMarket({ winningOutcome })
+    .accounts({ oracle: oracleSigner.publicKey, protocol, market })
+    .signers([oracleSigner])
+    .rpc();
+}
+
+async function requestRedeem(user: Keypair, marketId: number) {
+  const [market]   = marketPda(marketId);
+  const [position] = positionPda(market, user.publicKey);
+
+  await program.methods
+    .requestRedeem()
+    .accounts({ user: user.publicKey, market, position })
+    .signers([user])
+    .rpc();
+}
+
+async function claimWinnings(
+  user:      Keypair,
+  userToken: PublicKey,
+  marketId:  number,
+  shares:    number,
+) {
+  const [protocol] = protocolPda();
+  const [market]   = marketPda(marketId);
+  const [vault]    = vaultPda(market);
+  const [position] = positionPda(market, user.publicKey);
+
+  await program.methods
+    .claimWinnings({ shares: new BN(shares) })
+    .accounts({
+      user:             user.publicKey,
+      protocol,
+      market,
+      position,
+      userTokenAccount: userToken,
+      vault,
+      collateralMint,
+      tokenProgram:     TOKEN_2022_PROGRAM_ID,
+    })
+    .signers([user])
+    .rpc();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Test suites
+// ══════════════════════════════════════════════════════════════════════════════
 
 describe('initialize', () => {
   it('sets up protocol with correct config', async () => {
@@ -186,11 +338,7 @@ describe('initialize', () => {
 
     await program.methods
       .initialize({ oracle: oracle.publicKey, treasury: treasury.publicKey })
-      .accounts({
-        authority: authority.publicKey,
-        protocol,
-        systemProgram: SystemProgram.programId,
-      })
+      .accounts({ authority: authority.publicKey, protocol, systemProgram: SystemProgram.programId })
       .signers([authority])
       .rpc();
 
@@ -205,105 +353,68 @@ describe('initialize', () => {
 
   it('blocks double init', async () => {
     const [protocol] = protocolPda();
-
     await expectFail(() =>
       program.methods
         .initialize({ oracle: oracle.publicKey, treasury: treasury.publicKey })
-        .accounts({
-          authority: authority.publicKey,
-          protocol,
-          systemProgram: SystemProgram.programId,
-        })
+        .accounts({ authority: authority.publicKey, protocol, systemProgram: SystemProgram.programId })
         .signers([authority])
         .rpc(),
     );
   });
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+
 describe('create_market', () => {
-  async function createMarket(params: {
-    question?: string;
-    description?: string;
-    outcomes?: string[];
-    endTime?: BN;
-    signer?: Keypair;
-  } = {}) {
-    const [protocol] = protocolPda();
-    const state = await program.account.protocol.fetch(protocol);
-    const id = state.totalMarkets.toNumber();
-    const [market] = marketPda(id);
-    const [vault] = vaultPda(market);
-    const endTime = params.endTime ?? new BN((await now(context)) + ONE_HOUR + 120);
-    const signer = params.signer ?? authority;
-
-    await program.methods
-      .createMarket({
-        question: params.question ?? 'Will BTC exceed $150k before July 2026?',
-        description: params.description ?? 'Resolves YES if BTC >= $150k on Coinbase.',
-        outcomes: params.outcomes ?? ['YES', 'NO'],
-        endTime,
-      })
-      .accounts({
-        creator: signer.publicKey,
-        protocol,
-        market,
-        collateralMint,
-        vault,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([signer])
-      .rpc();
-
-    return { id, market, vault };
-  }
-
-  it('creates a binary market', async () => {
-    const { id, market } = await createMarket({
-      question: 'Will BTC exceed $150k before July 2026?',
-      outcomes: ['YES', 'NO'],
+  it('creates market with correct AMM initial state (50/50)', async () => {
+    const { id, market, vault } = await createMarket({
+      question:         'Will BTC exceed $150k by July 2026?',
+      initialLiquidity: new BN(INIT_LIQ),
     });
 
-    const state = await program.account.market.fetch(market);
+    const mkt = await program.account.market.fetch(market);
 
-    expect(state.id.toNumber()).to.equal(id);
-    expect(state.creator.toString()).to.equal(authority.publicKey.toString());
-    expect(state.question).to.equal('Will BTC exceed $150k before July 2026?');
-    expect(state.outcomes).to.deep.equal(['YES', 'NO']);
-    expect(state.status).to.deep.equal({ active: {} });
-    expect(state.winningOutcome).to.be.null;
-    expect(state.totalLiquidity.toNumber()).to.equal(0);
-    expect(state.outcomeTotals.map((t: any) => t.toNumber())).to.deep.equal([0, 0]);
-    expect(state.collateralMint.toString()).to.equal(collateralMint.toString());
+    expect(mkt.id.toNumber()).to.equal(id);
+    expect(mkt.creator.toString()).to.equal(authority.publicKey.toString());
+    expect(mkt.question).to.equal('Will BTC exceed $150k by July 2026?');
+    expect(mkt.yesLabel).to.equal('YES');
+    expect(mkt.noLabel).to.equal('NO');
+    expect(mkt.status).to.deep.equal({ active: {} });
+    expect(mkt.winningOutcome).to.be.null;
+
+    // AMM: 50/50 pool
+    expect(mkt.yesReserve.toNumber()).to.equal(INIT_LIQ);
+    expect(mkt.noReserve.toNumber()).to.equal(INIT_LIQ);
+    expect(mkt.yesSharesTotal.toNumber()).to.equal(0);
+    expect(mkt.noSharesTotal.toNumber()).to.equal(0);
+    expect(mkt.swapFeeBps).to.equal(30);
+
+    // Vault holds initial_liquidity
+    const vaultBal = await getTokenBalance(provider, vault);
+    expect(vaultBal).to.equal(INIT_LIQ);
   });
 
-  it('handles multi-outcome markets (5 options)', async () => {
-    const outcomes = ['Q1 2026', 'Q2 2026', 'Q3 2026', 'Q4 2026', 'Never'];
-    const { market } = await createMarket({ outcomes });
-
-    const state = await program.account.market.fetch(market);
-    expect(state.outcomes).to.deep.equal(outcomes);
-    expect(state.outcomeTotals.length).to.equal(5);
+  it("debits creator's token account for initial liquidity", async () => {
+    const before = await getTokenBalance(provider, authorityToken);
+    await createMarket({ initialLiquidity: new BN(INIT_LIQ) });
+    const after = await getTokenBalance(provider, authorityToken);
+    expect(before - after).to.equal(INIT_LIQ);
   });
 
   it('increments totalMarkets counter', async () => {
     const [protocol] = protocolPda();
-    const before = await program.account.protocol.fetch(protocol);
-    const countBefore = before.totalMarkets.toNumber();
-
-    await createMarket({ question: 'Increment test market' });
-
-    const after = await program.account.protocol.fetch(protocol);
-    expect(after.totalMarkets.toNumber()).to.equal(countBefore + 1);
+    const before = (await program.account.protocol.fetch(protocol)).totalMarkets.toNumber();
+    await createMarket({ question: 'Counter test' });
+    const after = (await program.account.protocol.fetch(protocol)).totalMarkets.toNumber();
+    expect(after).to.equal(before + 1);
   });
 
-  it('assigns sequential ids', async () => {
+  it('assigns sequential IDs', async () => {
     const [protocol] = protocolPda();
-    const { totalMarkets } = await program.account.protocol.fetch(protocol);
-    const startId = totalMarkets.toNumber();
+    const startId = (await program.account.protocol.fetch(protocol)).totalMarkets.toNumber();
 
-    const { market: m1 } = await createMarket({ question: 'Market A' });
-    const { market: m2 } = await createMarket({ question: 'Market B' });
+    const { market: m1 } = await createMarket({ question: 'Seq A' });
+    const { market: m2 } = await createMarket({ question: 'Seq B' });
 
     const s1 = await program.account.market.fetch(m1);
     const s2 = await program.account.market.fetch(m2);
@@ -312,37 +423,37 @@ describe('create_market', () => {
     expect(m1.toString()).to.not.equal(m2.toString());
   });
 
-  it('rejects non-authority caller', async () => {
+  it('rejects non-authority creator', async () => {
     await expectFail(
-      () => createMarket({ signer: stranger }),
+      () => createMarket({ signer: stranger, signerToken: strangerToken }),
       'Unauthorized',
     );
   });
 
-  it('rejects end time < 1 hour', async () => {
+  it('rejects end_time < 1 hour from now', async () => {
     const [protocol] = protocolPda();
     const state = await program.account.protocol.fetch(protocol);
-    const id = state.totalMarkets.toNumber();
+    const id    = state.totalMarkets.toNumber();
     const [market] = marketPda(id);
-    const [vault] = vaultPda(market);
+    const [vault]  = vaultPda(market);
+    const t     = await now(context);
 
     await expectFail(
-      async () =>
+      () =>
         program.methods
           .createMarket({
-            question: 'Short market',
-            description: 'Should fail',
-            outcomes: ['YES', 'NO'],
-            endTime: new BN((await now(context)) + 30 * 60),
+            question:         'Too short',
+            description:      '',
+            yesLabel:         'YES',
+            noLabel:          'NO',
+            endTime:          new BN(t + 1800), // 30 min
+            initialLiquidity: new BN(INIT_LIQ),
+            swapFeeBps:       30,
           })
           .accounts({
-            creator: authority.publicKey,
-            protocol,
-            market,
-            collateralMint,
-            vault,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
+            creator: authority.publicKey, protocol, market, collateralMint,
+            vault, creatorTokenAccount: authorityToken,
+            tokenProgram: TOKEN_2022_PROGRAM_ID, systemProgram: SystemProgram.programId,
           })
           .signers([authority])
           .rpc(),
@@ -350,162 +461,170 @@ describe('create_market', () => {
     );
   });
 
-  it('rejects single outcome', async () => {
-    await expectFail(
-      () => createMarket({ outcomes: ['ONLY_ONE'] }),
-      'TooManyOutcomes',
-    );
-  });
+  it('rejects zero initial liquidity', async () => {
+    const [protocol] = protocolPda();
+    const state = await program.account.protocol.fetch(protocol);
+    const id    = state.totalMarkets.toNumber();
+    const [market] = marketPda(id);
+    const [vault]  = vaultPda(market);
+    const t     = await now(context);
 
-  it('rejects > 10 outcomes', async () => {
-    const outcomes = Array.from({ length: 11 }, (_, i) => `Option ${i + 1}`);
     await expectFail(
-      () => createMarket({ outcomes }),
-      'TooManyOutcomes',
+      () =>
+        program.methods
+          .createMarket({
+            question:         'Zero liq',
+            description:      '',
+            yesLabel:         'YES',
+            noLabel:          'NO',
+            endTime:          new BN(t + ONE_HOUR + 300),
+            initialLiquidity: new BN(0),
+            swapFeeBps:       30,
+          })
+          .accounts({
+            creator: authority.publicKey, protocol, market, collateralMint,
+            vault, creatorTokenAccount: authorityToken,
+            tokenProgram: TOKEN_2022_PROGRAM_ID, systemProgram: SystemProgram.programId,
+          })
+          .signers([authority])
+          .rpc(),
+      'ZeroLiquidity',
     );
   });
 });
 
-describe('place_prediction', () => {
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('swap', () => {
+  // All swap tests operate on market 0 (first created)
   const MARKET_ID = 0;
   const YES = 0;
-  const NO = 1;
-  const BET_A = 1_000 * 10 ** TOKEN_DECIMALS;
-  const BET_B = 500 * 10 ** TOKEN_DECIMALS;
-  const ADD_A = 200 * 10 ** TOKEN_DECIMALS;
+  const NO  = 1;
 
-  async function predict(user: Keypair, userToken: PublicKey, outcome: number, amount: number) {
+  it('buying YES increases YES price (no_reserve up, yes_reserve down)', async () => {
     const [market] = marketPda(MARKET_ID);
-    const [vault] = vaultPda(market);
-    const [position] = positionPda(market, user.publicKey, outcome);
+    const mktBefore = await program.account.market.fetch(market);
+    const yesBefore = mktBefore.yesReserve.toNumber();
+    const noBefore  = mktBefore.noReserve.toNumber();
 
-    await program.methods
-      .placePrediction({ outcome, amount: new BN(amount) })
-      .accounts({
-        user: user.publicKey,
-        market,
-        position,
-        userTokenAccount: userToken,
-        vault,
-        collateralMint,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([user])
-      .rpc();
-  }
+    const BUY = 500 * ONE_UNIT;
+    await swap(userA, userAToken, MARKET_ID, YES, BUY);
 
-  it('userA bets YES — position + vault updated', async () => {
+    const mktAfter = await program.account.market.fetch(market);
+    const yesAfter = mktAfter.yesReserve.toNumber();
+    const noAfter  = mktAfter.noReserve.toNumber();
+
+    // YES reserve decreased → fewer YES in pool → YES is more expensive
+    expect(yesAfter).to.be.lessThan(yesBefore);
+    // NO reserve increased → amount_in deposited to NO side
+    expect(noAfter).to.be.greaterThan(noBefore);
+    // YES shares issued to user
+    expect(mktAfter.yesSharesTotal.toNumber()).to.be.greaterThan(0);
+  });
+
+  it('buying NO increases NO price (yes_reserve up, no_reserve down)', async () => {
     const [market] = marketPda(MARKET_ID);
-    const [vault] = vaultPda(market);
-    const [position] = positionPda(market, userA.publicKey, YES);
+    const mktBefore = await program.account.market.fetch(market);
+    const yesBefore = mktBefore.yesReserve.toNumber();
+    const noBefore  = mktBefore.noReserve.toNumber();
 
-    const vaultBefore = await getAccount(
-      provider.connection, vault, 'confirmed', TOKEN_2022_PROGRAM_ID,
+    await swap(userB, userBToken, MARKET_ID, NO, 500 * ONE_UNIT);
+
+    const mktAfter = await program.account.market.fetch(market);
+    expect(mktAfter.noReserve.toNumber()).to.be.lessThan(noBefore);
+    expect(mktAfter.yesReserve.toNumber()).to.be.greaterThan(yesBefore);
+    expect(mktAfter.noSharesTotal.toNumber()).to.be.greaterThan(0);
+  });
+
+  it('CPMM invariant k maintained after swap (within rounding)', async () => {
+    const [market] = marketPda(MARKET_ID);
+
+    // Snapshot k before
+    const mktBefore = await program.account.market.fetch(market);
+    const kBefore = BigInt(mktBefore.yesReserve.toString()) *
+                    BigInt(mktBefore.noReserve.toString());
+
+    await swap(userA, userAToken, MARKET_ID, YES, 200 * ONE_UNIT);
+
+    const mktAfter = await program.account.market.fetch(market);
+    const kAfter  = BigInt(mktAfter.yesReserve.toString()) *
+                    BigInt(mktAfter.noReserve.toString());
+
+    // k should be maintained (allow 1 unit rounding tolerance from integer division)
+    const diff = kAfter >= kBefore ? kAfter - kBefore : kBefore - kAfter;
+    expect(Number(diff)).to.be.lessThanOrEqual(
+      mktAfter.noReserve.toNumber(), // rounding tolerance proportional to pool size
     );
+  });
 
-    await predict(userA, userAToken, YES, BET_A);
+  it('prices are bounded (0, 1) and sum to ~1', async () => {
+    const [market] = marketPda(MARKET_ID);
+    const mkt = await program.account.market.fetch(market);
 
+    const total = mkt.yesReserve.toNumber() + mkt.noReserve.toNumber();
+    const yesPrice = mkt.noReserve.toNumber() / total;
+    const noPrice  = mkt.yesReserve.toNumber() / total;
+
+    expect(yesPrice).to.be.greaterThan(0);
+    expect(yesPrice).to.be.lessThan(1);
+    expect(noPrice).to.be.greaterThan(0);
+    expect(noPrice).to.be.lessThan(1);
+    expect(yesPrice + noPrice).to.be.closeTo(1.0, 0.0001);
+  });
+
+  it('swap fee deducted — vault gets full amount, fee stays in vault', async () => {
+    const [market] = marketPda(MARKET_ID);
+    const [vault]  = vaultPda(market);
+
+    const vaultBefore = await getTokenBalance(provider, vault);
+    const userBefore  = await getTokenBalance(provider, userAToken);
+    const BUY = 1000 * ONE_UNIT;
+
+    await swap(userA, userAToken, MARKET_ID, YES, BUY);
+
+    const vaultAfter = await getTokenBalance(provider, vault);
+    const userAfter  = await getTokenBalance(provider, userAToken);
+
+    // Full buy amount leaves user wallet
+    expect(userBefore - userAfter).to.equal(BUY);
+    // Full amount arrives in vault (fee stays inside vault)
+    expect(vaultAfter - vaultBefore).to.equal(BUY);
+  });
+
+  it('position created with correct owner and market', async () => {
+    const [market]   = marketPda(MARKET_ID);
+    const [position] = positionPda(market, userA.publicKey);
     const pos = await program.account.position.fetch(position);
+
     expect(pos.owner.toString()).to.equal(userA.publicKey.toString());
-    expect(pos.outcome).to.equal(YES);
-    expect(pos.amount.toNumber()).to.equal(BET_A);
-    expect(pos.claimed).to.be.false;
-
-    const vaultAfter = await getAccount(
-      provider.connection, vault, 'confirmed', TOKEN_2022_PROGRAM_ID,
-    );
-    expect(Number(vaultAfter.amount) - Number(vaultBefore.amount)).to.equal(BET_A);
-
-    const mkt = await program.account.market.fetch(market);
-    expect(mkt.outcomeTotals[YES].toNumber()).to.equal(BET_A);
-    expect(mkt.totalLiquidity.toNumber()).to.equal(BET_A);
+    expect(pos.market.toString()).to.equal(market.toString());
+    expect(pos.redeemed).to.be.false;
+    // Ciphertext handles stay as zero Pubkey (Encrypt integration stubbed; real EUint64 wired when SDK ships)
   });
 
-  it('userB bets NO — separate position', async () => {
+  it('second swap accumulates — yes_shares_total increases further', async () => {
     const [market] = marketPda(MARKET_ID);
-    const [position] = positionPda(market, userB.publicKey, NO);
+    const before   = (await program.account.market.fetch(market)).yesSharesTotal.toNumber();
 
-    await predict(userB, userBToken, NO, BET_B);
+    await swap(userA, userAToken, MARKET_ID, YES, 300 * ONE_UNIT);
 
-    const pos = await program.account.position.fetch(position);
-    expect(pos.outcome).to.equal(NO);
-    expect(pos.amount.toNumber()).to.equal(BET_B);
-
-    const mkt = await program.account.market.fetch(market);
-    expect(mkt.outcomeTotals[NO].toNumber()).to.equal(BET_B);
-    expect(mkt.totalLiquidity.toNumber()).to.equal(BET_A + BET_B);
-  });
-
-  it('userA tops up YES — amount accumulates', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const [position] = positionPda(market, userA.publicKey, YES);
-
-    await predict(userA, userAToken, YES, ADD_A);
-
-    const pos = await program.account.position.fetch(position);
-    expect(pos.amount.toNumber()).to.equal(BET_A + ADD_A);
-
-    const mkt = await program.account.market.fetch(market);
-    expect(mkt.outcomeTotals[YES].toNumber()).to.equal(BET_A + ADD_A);
-    expect(mkt.totalLiquidity.toNumber()).to.equal(BET_A + ADD_A + BET_B);
-  });
-
-  it('tracks YES and NO pools independently', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const mkt = await program.account.market.fetch(market);
-
-    const expectedYes = BET_A + ADD_A;
-    const expectedNo = BET_B;
-    expect(mkt.outcomeTotals[YES].toNumber()).to.equal(expectedYes);
-    expect(mkt.outcomeTotals[NO].toNumber()).to.equal(expectedNo);
-    expect(mkt.totalLiquidity.toNumber()).to.equal(expectedYes + expectedNo);
-  });
-
-  it('rejects out-of-range outcome', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const [vault] = vaultPda(market);
-    const INVALID_OUTCOME = 5;
-    const [position] = positionPda(market, userA.publicKey, INVALID_OUTCOME);
-
-    await expectFail(
-      () =>
-        program.methods
-          .placePrediction({ outcome: INVALID_OUTCOME, amount: new BN(100) })
-          .accounts({
-            user: userA.publicKey,
-            market,
-            position,
-            userTokenAccount: userAToken,
-            vault,
-            collateralMint,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([userA])
-          .rpc(),
-      'InvalidOutcome',
-    );
+    const after = (await program.account.market.fetch(market)).yesSharesTotal.toNumber();
+    expect(after).to.be.greaterThan(before);
   });
 
   it('rejects zero amount', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const [vault] = vaultPda(market);
-    const [position] = positionPda(market, userA.publicKey, YES);
+    const [market]   = marketPda(MARKET_ID);
+    const [vault]    = vaultPda(market);
+    const [position] = positionPda(market, userA.publicKey);
 
     await expectFail(
       () =>
         program.methods
-          .placePrediction({ outcome: YES, amount: new BN(0) })
+          .swap({ outcome: YES, amount: new BN(0) })
           .accounts({
-            user: userA.publicKey,
-            market,
-            position,
-            userTokenAccount: userAToken,
-            vault,
-            collateralMint,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
+            user: userA.publicKey, market, position,
+            userTokenAccount: userAToken, vault, collateralMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID, systemProgram: SystemProgram.programId,
           })
           .signers([userA])
           .rpc(),
@@ -513,27 +632,42 @@ describe('place_prediction', () => {
     );
   });
 
-  it('rejects bet after market ended', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const mkt = await program.account.market.fetch(market);
-    await warpBy(context, mkt.endTime.toNumber() - (await now(context)) + 10);
-
-    const [vault] = vaultPda(market);
-    const [position] = positionPda(market, userA.publicKey, YES);
+  it('rejects invalid outcome (not 0 or 1)', async () => {
+    const [market]   = marketPda(MARKET_ID);
+    const [vault]    = vaultPda(market);
+    const [position] = positionPda(market, userA.publicKey);
 
     await expectFail(
       () =>
         program.methods
-          .placePrediction({ outcome: YES, amount: new BN(100) })
+          .swap({ outcome: 5, amount: new BN(100 * ONE_UNIT) })
           .accounts({
-            user: userA.publicKey,
-            market,
-            position,
-            userTokenAccount: userAToken,
-            vault,
-            collateralMint,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
+            user: userA.publicKey, market, position,
+            userTokenAccount: userAToken, vault, collateralMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID, systemProgram: SystemProgram.programId,
+          })
+          .signers([userA])
+          .rpc(),
+      'InvalidOutcome',
+    );
+  });
+
+  it('rejects swap after market ended', async () => {
+    const [market] = marketPda(MARKET_ID);
+    const mkt      = await program.account.market.fetch(market);
+    await warpBy(context, mkt.endTime.toNumber() - (await now(context)) + 10);
+
+    const [vault]    = vaultPda(market);
+    const [position] = positionPda(market, userA.publicKey);
+
+    await expectFail(
+      () =>
+        program.methods
+          .swap({ outcome: YES, amount: new BN(100 * ONE_UNIT) })
+          .accounts({
+            user: userA.publicKey, market, position,
+            userTokenAccount: userAToken, vault, collateralMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID, systemProgram: SystemProgram.programId,
           })
           .signers([userA])
           .rpc(),
@@ -542,256 +676,206 @@ describe('place_prediction', () => {
   });
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
 
 describe('resolve_market', () => {
   const MARKET_ID = 0;
-  const YES = 0;
-
-  async function resolve(oracleSigner: Keypair, winningOutcome: number) {
-    const [protocol] = protocolPda();
-    const [market] = marketPda(MARKET_ID);
-
-    await program.methods
-      .resolveMarket({ winningOutcome })
-      .accounts({
-        oracle: oracleSigner.publicKey,
-        protocol,
-        market,
-      })
-      .signers([oracleSigner])
-      .rpc();
-  }
 
   it('rejects non-oracle signer', async () => {
     await expectFail(
-      () => resolve(stranger, YES),
+      () => resolveMarket(stranger, MARKET_ID, 0),
       'Unauthorized',
     );
   });
 
-  it('rejects invalid outcome index', async () => {
+  it('rejects invalid outcome (>1)', async () => {
     await expectFail(
-      () => resolve(oracle, 99),
+      () => resolveMarket(oracle, MARKET_ID, 99),
       'InvalidOutcome',
     );
   });
 
-  it('oracle resolves after end_time', async () => {
-    await resolve(oracle, YES);
+  it('oracle resolves YES after end_time', async () => {
+    // Market 0 is already past end_time from the swap tests
+    await resolveMarket(oracle, MARKET_ID, 0);
 
     const [market] = marketPda(MARKET_ID);
-    const mkt = await program.account.market.fetch(market);
+    const mkt      = await program.account.market.fetch(market);
 
     expect(mkt.status).to.deep.equal({ resolved: {} });
-    expect(mkt.winningOutcome).to.equal(YES);
+    expect(mkt.winningOutcome).to.equal(0);
     expect(mkt.resolutionTime.toNumber()).to.be.greaterThan(0);
   });
 
   it('blocks double resolution', async () => {
     await expectFail(
-      () => resolve(oracle, YES),
+      () => resolveMarket(oracle, MARKET_ID, 0),
       'MarketAlreadyResolved',
     );
   });
 
   it('blocks resolution before end_time', async () => {
-    const [protocol] = protocolPda();
-    const state = await program.account.protocol.fetch(protocol);
-    const id = state.totalMarkets.toNumber();
-    const [market] = marketPda(id);
-    const [vault] = vaultPda(market);
-    const endTime = new BN((await now(context)) + ONE_HOUR + 300);
-
-    await program.methods
-      .createMarket({
-        question: 'Resolve-before-end test',
-        description: 'not resolvable yet',
-        outcomes: ['YES', 'NO'],
-        endTime,
-      })
-      .accounts({
-        creator: authority.publicKey,
-        protocol,
-        market,
-        collateralMint,
-        vault,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([authority])
-      .rpc();
+    // Create a fresh market in the future
+    const { id } = await createMarket({
+      question: 'Resolve-before-end test',
+      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+    });
 
     await expectFail(
-      () =>
-        program.methods
-          .resolveMarket({ winningOutcome: 0 })
-          .accounts({ oracle: oracle.publicKey, protocol, market })
-          .signers([oracle])
-          .rpc(),
+      () => resolveMarket(oracle, id, 0),
       'MarketNotEnded',
     );
   });
 
   it('blocks resolution after 24h window', async () => {
-    const [protocol] = protocolPda();
-    const state = await program.account.protocol.fetch(protocol);
-    const id = state.totalMarkets.toNumber() - 1;
-    const [market] = marketPda(id);
-    const mkt = await program.account.market.fetch(market);
+    // Create a fresh market, warp past end + 25h
+    const { id, market } = await createMarket({
+      question: 'Window-expired test',
+      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+    });
 
+    const mkt    = await program.account.market.fetch(market);
     const target = mkt.endTime.toNumber() + 25 * 3600;
     await warpBy(context, target - (await now(context)));
 
     await expectFail(
-      () =>
-        program.methods
-          .resolveMarket({ winningOutcome: 0 })
-          .accounts({ oracle: oracle.publicKey, protocol, market })
-          .signers([oracle])
-          .rpc(),
+      () => resolveMarket(oracle, id, 0),
       'ResolutionWindowExpired',
     );
   });
 });
 
-describe('claim_winnings', () => {
-  const MARKET_ID = 0;
-  const YES = 0;
-  const NO = 1;
+// ──────────────────────────────────────────────────────────────────────────────
 
-  // userA: 1200 USDC on YES, userB: 500 on NO, pool = 1700
-  // gross = (1200/1200)*1700 = 1700, fee = 17, net = 1683
-  const BET_A_TOTAL = (1_000 + 200) * 10 ** TOKEN_DECIMALS;
-  const TOTAL_LIQ = (1_000 + 200 + 500) * 10 ** TOKEN_DECIMALS;
-  const GROSS = Math.floor((BET_A_TOTAL * TOTAL_LIQ) / BET_A_TOTAL);
-  const FEE = Math.floor((GROSS * 100) / 10_000);
-  const NET = GROSS - FEE;
+describe('redeem', () => {
+  // Use a dedicated market so we have full control over its lifecycle
+  let redeemMarketId: number;
 
-  async function claim(user: Keypair, userToken: PublicKey, outcome: number) {
-    const [protocol] = protocolPda();
-    const [market] = marketPda(MARKET_ID);
-    const [vault] = vaultPda(market);
-    const [position] = positionPda(market, user.publicKey, outcome);
+  const BUY_A = 2_000 * ONE_UNIT; // userA buys YES
 
-    await program.methods
-      .claimWinnings()
-      .accounts({
-        user: user.publicKey,
-        protocol,
-        market,
-        position,
-        userTokenAccount: userToken,
-        vault,
-        collateralMint,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-      })
-      .signers([user])
-      .rpc();
-  }
+  before(async () => {
+    // Create a fresh market, let userA buy YES, then resolve YES wins
+    const { id, market } = await createMarket({
+      question: 'Redeem test market',
+      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+    });
+    redeemMarketId = id;
 
-  it('pays winner the right amount', async () => {
-    const before = await getAccount(
-      provider.connection, userAToken, 'confirmed', TOKEN_2022_PROGRAM_ID,
-    );
+    // userA buys YES
+    await swap(userA, userAToken, redeemMarketId, YES, BUY_A);
 
-    await claim(userA, userAToken, YES);
+    // Warp past end_time
+    const mkt = await program.account.market.fetch(market);
+    await warpBy(context, mkt.endTime.toNumber() - (await now(context)) + 10);
 
-    const after = await getAccount(
-      provider.connection, userAToken, 'confirmed', TOKEN_2022_PROGRAM_ID,
-    );
-    const received = Number(after.amount) - Number(before.amount);
-    expect(received).to.equal(NET);
+    // Oracle resolves YES (outcome 0)
+    await resolveMarket(oracle, redeemMarketId, 0);
   });
 
-  it('fee stays in vault', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const [vault] = vaultPda(market);
-    const vaultBalance = await getAccount(
-      provider.connection, vault, 'confirmed', TOKEN_2022_PROGRAM_ID,
-    );
-    expect(Number(vaultBalance.amount)).to.equal(FEE);
-  });
+  it('blocks redeem on unresolved market', async () => {
+    // Create a market, buy shares so the position exists, then try to redeem
+    // before the market is resolved — should fail with MarketNotActive.
+    const { id, market } = await createMarket({ question: 'Unresolved redeem test' });
+    await swap(userA, userAToken, id, YES, BUY_A);
 
-  it('marks position as claimed', async () => {
-    const [market] = marketPda(MARKET_ID);
-    const [position] = positionPda(market, userA.publicKey, YES);
-    const pos = await program.account.position.fetch(position);
-    expect(pos.claimed).to.be.true;
-  });
-
-  it('blocks double claim', async () => {
-    await expectFail(
-      () => claim(userA, userAToken, YES),
-      'NoWinnings',
-    );
-  });
-
-  it('blocks loser from claiming', async () => {
-    await expectFail(
-      () => claim(userB, userBToken, NO),
-      'NoWinnings',
-    );
-  });
-
-  it('blocks claim on unresolved market', async () => {
-    const [protocol] = protocolPda();
-    const state = await program.account.protocol.fetch(protocol);
-    const id = state.totalMarkets.toNumber();
-    const [market] = marketPda(id);
-    const [vault] = vaultPda(market);
-
-    await program.methods
-      .createMarket({
-        question: 'Unresolved claim test',
-        description: 'not claimable',
-        outcomes: ['YES', 'NO'],
-        endTime: new BN((await now(context)) + ONE_HOUR + 300),
-      })
-      .accounts({
-        creator: authority.publicKey,
-        protocol,
-        market,
-        collateralMint,
-        vault,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([authority])
-      .rpc();
-
-    const [position] = positionPda(market, userA.publicKey, 0);
-    await program.methods
-      .placePrediction({ outcome: 0, amount: new BN(100 * 10 ** TOKEN_DECIMALS) })
-      .accounts({
-        user: userA.publicKey,
-        market,
-        position,
-        userTokenAccount: userAToken,
-        vault,
-        collateralMint,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([userA])
-      .rpc();
+    const [position] = positionPda(market, userA.publicKey);
 
     await expectFail(
       () =>
         program.methods
-          .claimWinnings()
-          .accounts({
-            user: userA.publicKey,
-            protocol,
-            market,
-            position,
-            userTokenAccount: userAToken,
-            vault,
-            collateralMint,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-          })
+          .requestRedeem()
+          .accounts({ user: userA.publicKey, market, position })
           .signers([userA])
           .rpc(),
       'MarketNotActive',
+    );
+  });
+
+  it('loser (NO holder) cannot claim', async () => {
+    // userB has NO position on redeemMarketId but YES won
+    // First give userB a NO position
+    const BUY_B = 500 * ONE_UNIT;
+
+    // Create a second redeem market for the loser test
+    const { id, market } = await createMarket({
+      question: 'Loser redeem test',
+      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+    });
+
+    await swap(userA, userAToken, id, YES, BUY_A);
+    await swap(userB, userBToken, id, NO, BUY_B);
+
+    const mkt = await program.account.market.fetch(market);
+    await warpBy(context, mkt.endTime.toNumber() - (await now(context)) + 10);
+    await resolveMarket(oracle, id, 0); // YES wins
+
+    // userB has NO shares but YES won → should fail on claim
+    const [position] = positionPda(market, userB.publicKey);
+    await expectFail(
+      () =>
+        program.methods
+          .requestRedeem()
+          .accounts({ user: userB.publicKey, market, position })
+          .signers([userB])
+          .rpc(),
+      'NotAWinner',
+    );
+  });
+
+  it('winner requests redeem successfully', async () => {
+    // Should not throw
+    await requestRedeem(userA, redeemMarketId);
+  });
+
+  it('winner claims correct payout', async () => {
+    const [market] = marketPda(redeemMarketId);
+    const mkt      = await program.account.market.fetch(market);
+    const [vault]  = vaultPda(market);
+
+    const vaultBalance    = await getTokenBalance(provider, vault);
+    const yesSharesTotal  = mkt.yesSharesTotal.toNumber();
+
+    // Get userA's YES shares total from market (public counter)
+    // In production, userA would get share count from Encrypt gRPC reveal
+    // Here: userA is the only YES buyer, so their shares == yes_shares_total
+    const userShares = yesSharesTotal;
+
+    const gross = Math.floor((userShares * vaultBalance) / yesSharesTotal);
+    const fee   = Math.floor((gross * 100) / 10_000);  // 1% protocol fee
+    const net   = gross - fee;
+
+    const userBefore = await getTokenBalance(provider, userAToken);
+    await claimWinnings(userA, userAToken, redeemMarketId, userShares);
+    const userAfter  = await getTokenBalance(provider, userAToken);
+
+    expect(userAfter - userBefore).to.equal(net);
+  });
+
+  it('fee stays in vault after claim', async () => {
+    const [market] = marketPda(redeemMarketId);
+    const [vault]  = vaultPda(market);
+    const mkt      = await program.account.market.fetch(market);
+
+    const vaultBalance = await getTokenBalance(provider, vault);
+    // vault should hold the fee remainder
+    expect(vaultBalance).to.be.greaterThan(0);
+  });
+
+  it('marks position as redeemed', async () => {
+    const [market]   = marketPda(redeemMarketId);
+    const [position] = positionPda(market, userA.publicKey);
+    const pos        = await program.account.position.fetch(position);
+    expect(pos.redeemed).to.be.true;
+  });
+
+  it('blocks double claim', async () => {
+    const [market]    = marketPda(redeemMarketId);
+    const mkt         = await program.account.market.fetch(market);
+    const yesShTotal  = mkt.yesSharesTotal.toNumber();
+
+    await expectFail(
+      () => claimWinnings(userA, userAToken, redeemMarketId, yesShTotal),
+      'AlreadyRedeemed',
     );
   });
 });

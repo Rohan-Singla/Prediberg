@@ -12,22 +12,24 @@ pub enum PredibergError {
     MarketNotEnded,
     #[msg("Market ended")]
     MarketEnded,
-    #[msg("Invalid outcome")]
+    #[msg("Invalid outcome — must be 0 (YES) or 1 (NO)")]
     InvalidOutcome,
     #[msg("Invalid duration")]
     InvalidDuration,
-    #[msg("Insufficient funds")]
-    InsufficientFunds,
     #[msg("Invalid amount")]
     InvalidAmount,
     #[msg("Resolution window expired")]
     ResolutionWindowExpired,
-    #[msg("Nothing to claim")]
-    NoWinnings,
-    #[msg("Too many outcomes")]
-    TooManyOutcomes,
+    #[msg("Already redeemed")]
+    AlreadyRedeemed,
+    #[msg("Not a winner")]
+    NotAWinner,
+    #[msg("Insufficient liquidity — swap too large for pool depth")]
+    InsufficientLiquidity,
+    #[msg("Swap too large — exceeds 50% of pool")]
+    SwapTooLarge,
+    #[msg("Zero initial liquidity")]
+    ZeroLiquidity,
     #[msg("Overflow")]
     Overflow,
-    #[msg("Invalid oracle signature")]
-    InvalidOracleSignature,
 }

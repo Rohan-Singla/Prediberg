@@ -38,7 +38,8 @@ pub fn handler(ctx: Context<ResolveMarket>, params: ResolveMarketParams) -> Resu
 
     let window_end = market.end_time.checked_add(RESOLUTION_WINDOW).ok_or(PredibergError::Overflow)?;
     require!(clock.unix_timestamp <= window_end, PredibergError::ResolutionWindowExpired);
-    require!((params.winning_outcome as usize) < market.outcomes.len(), PredibergError::InvalidOutcome);
+    // Binary market: only 0 (YES) or 1 (NO) are valid outcomes
+    require!(params.winning_outcome <= 1, PredibergError::InvalidOutcome);
 
     market.winning_outcome = Some(params.winning_outcome);
     market.status = MarketStatus::Resolved;

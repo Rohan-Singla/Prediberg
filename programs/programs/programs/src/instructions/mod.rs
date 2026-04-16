@@ -1,11 +1,11 @@
 pub mod initialize;
 pub mod create_market;
-pub mod place_prediction;
+pub mod swap;
 pub mod resolve_market;
-pub mod claim_winnings;
+pub mod redeem;
 
 pub use initialize::*;
 pub use create_market::*;
-pub use place_prediction::*;
+pub use swap::*;
 pub use resolve_market::*;
-pub use claim_winnings::*;
+pub use redeem::*;

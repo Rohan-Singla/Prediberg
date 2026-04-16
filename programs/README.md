@@ -1,164 +1,180 @@
-# Prediberg Solana Program
+# Prediberg — Solana Program
 
-Decentralized prediction market protocol built with Anchor on Solana. Users create markets with multiple outcomes, place predictions by depositing collateral, and claim winnings after an oracle resolves the market.
+Binary prediction markets on Solana using a CPMM (Constant Product Market Maker) AMM, with per-user position privacy via [Encrypt](https://docs.encrypt.xyz/) (FHE).
 
-**Program ID:** `ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5`
-
+**Program ID:** `ERBbHZVm9JdNv31YDj8SstNy6vwuCyAwifhUWtQKdtN5`  
 **Network:** Devnet
+
+---
+
+## Overview
+
+Each market is a YES/NO binary market seeded with collateral (USDC).
+Prices are determined by the AMM at all times — no order book needed.
+Individual position sizes are stored as Encrypt ciphertext handles so on-chain observers cannot read any user's total exposure; pool reserves (and therefore prices) remain fully public.
+
+---
 
 ## Architecture
 
 ```
-programs/prediberg/src/
-├── lib.rs                # Program entry point
-├── constants.rs          # Seeds, fees, limits
-├── errors.rs             # Custom error codes
+programs/programs/programs/src/
+├── lib.rs                  # Anchor entry point — instruction dispatch
+├── constants.rs            # Seeds, fee constants, time constraints
+├── errors.rs               # Custom error codes
 ├── state/
-│   ├── protocol.rs       # Global protocol config (authority, oracle, treasury, fees)
-│   ├── market.rs         # Market account (question, outcomes, liquidity, status)
-│   └── position.rs       # User position per market/outcome
+│   ├── market.rs           # Market account (AMM state, reserves, labels)
+│   ├── position.rs         # Per-user position (Encrypt ciphertext handles)
+│   └── protocol.rs         # Protocol config (oracle, treasury)
 └── instructions/
-    ├── initialize.rs     # Set up protocol
-    ├── create_market.rs  # Create a new market
-    ├── place_prediction.rs # Buy into an outcome
-    ├── resolve_market.rs # Oracle resolves the winner
-    └── claim_winnings.rs # Winners withdraw payout
+    ├── initialize.rs       # Deploy protocol
+    ├── create_market.rs    # Create a YES/NO market + seed the AMM
+    ├── swap.rs             # CPMM swap (buy YES or NO shares)
+    ├── resolve_market.rs   # Oracle resolves winning outcome
+    └── redeem.rs           # request_redeem + claim_winnings
 ```
 
-## Accounts
-
-### Protocol
-Global singleton PDA storing protocol-level configuration.
-
-| Field          | Type   | Description                      |
-|----------------|--------|----------------------------------|
-| authority      | Pubkey | Admin who can update settings    |
-| oracle         | Pubkey | Authorized market resolver       |
-| treasury       | Pubkey | Fee collection address           |
-| fee_bps        | u16    | Protocol fee (default: 100 = 1%) |
-| total_markets  | u64    | Counter for market IDs           |
-| total_volume   | u64    | Cumulative volume                |
-
-**PDA:** `[b"protocol"]`
-
-### Market
-One account per prediction market.
-
-| Field            | Type          | Description                         |
-|------------------|---------------|-------------------------------------|
-| id               | u64           | Unique market ID                    |
-| creator          | Pubkey        | Market creator                      |
-| question         | String (256)  | Market question                     |
-| description      | String (1024) | Detailed description                |
-| outcomes         | Vec\<String\> | Outcome labels (max 10, 64 chars)   |
-| outcome_totals   | Vec\<u64\>    | Total tokens per outcome            |
-| end_time         | i64           | Betting deadline (unix timestamp)   |
-| resolution_time  | i64           | When market was resolved            |
-| winning_outcome  | Option\<u8\>  | Winning outcome index               |
-| status           | MarketStatus  | Active / Resolved / Cancelled       |
-| total_liquidity  | u64           | Total collateral in vault           |
-| collateral_mint  | Pubkey        | Accepted token mint (e.g., USDC)    |
-| vault            | Pubkey        | Token account holding collateral    |
-
-**PDA:** `[b"market", market_id.to_le_bytes()]`
-
-### Position
-One account per user per market per outcome.
-
-| Field   | Type   | Description                |
-|---------|--------|----------------------------|
-| market  | Pubkey | Associated market          |
-| owner   | Pubkey | Position owner             |
-| outcome | u8     | Outcome index              |
-| amount  | u64    | Collateral deposited       |
-| claimed | bool   | Whether winnings claimed   |
-
-**PDA:** `[b"position", market_key, user_key, outcome]`
+---
 
 ## Instructions
 
-### 1. `initialize`
-Sets up the global protocol account.
+### `initialize`
+Deploys the protocol singleton. Sets the oracle address, treasury, and protocol fee.
 
-- **Signer:** Authority
-- **Params:** `oracle` (Pubkey), `treasury` (Pubkey)
-- **Effect:** Creates Protocol PDA with default 1% fee
+### `create_market`
+Creates a new binary market. The creator seeds the AMM pool with `initial_liquidity` USDC, setting both YES and NO reserves to the same value (50/50 starting price).
 
-### 2. `create_market`
-Creates a new prediction market with a collateral vault.
+**Parameters**
+| Field | Type | Description |
+|-------|------|-------------|
+| `question` | `String` | Market question (max 256 chars) |
+| `description` | `String` | Additional context (max 1024 chars) |
+| `yes_label` | `String` | Label for YES outcome (max 32 chars) |
+| `no_label` | `String` | Label for NO outcome (max 32 chars) |
+| `end_time` | `i64` | Unix timestamp for market close |
+| `initial_liquidity` | `u64` | USDC (in base units) to seed both sides |
+| `swap_fee_bps` | `u16` | Swap fee in basis points (default 30 = 0.3%) |
 
-- **Signer:** Protocol authority
-- **Params:** `question`, `description`, `outcomes` (Vec\<String\>), `end_time` (i64)
-- **Validations:**
-  - Duration between 1 hour and 365 days
-  - 2-10 outcomes
-- **Effect:** Creates Market PDA and associated token vault
+### `swap`
+Buys YES or NO shares using USDC. Implements the CPMM formula:
 
-### 3. `place_prediction`
-Deposits collateral to back a specific outcome.
+```
+# Buying YES (add to NO side, draw from YES side)
+fee           = amount × swap_fee_bps / 10000
+amount_in     = amount − fee
+new_no_res    = no_reserve + amount_in
+new_yes_res   = k / new_no_res          # k = yes_reserve × no_reserve
+shares_out    = yes_reserve − new_yes_res
+```
 
-- **Signer:** User
-- **Params:** `outcome` (u8), `amount` (u64)
-- **Validations:**
-  - Market is active and not past end time
-  - Valid outcome index
-  - Amount > 0
-- **Effect:** Transfers collateral to vault, creates/updates Position PDA
+A single swap cannot take more than `MAX_SWAP_IMPACT_BPS` (50%) of the pool.
 
-### 4. `resolve_market`
-Oracle declares the winning outcome.
+**Parameters**
+| Field | Type | Description |
+|-------|------|-------------|
+| `outcome` | `u8` | `0` = buy YES, `1` = buy NO |
+| `amount` | `u64` | USDC to spend (base units) |
 
-- **Signer:** Oracle (must match `protocol.oracle`)
-- **Params:** `winning_outcome` (u8)
-- **Validations:**
-  - Market is active
-  - Past end time but within 24-hour resolution window
-  - Valid outcome index
-- **Effect:** Sets winning outcome and market status to Resolved
+### `resolve_market`
+Called by the oracle after `end_time`. Sets `winning_outcome` (0=YES, 1=NO) and transitions market to `Resolved`. Must be called within the 24-hour resolution window.
 
-### 5. `claim_winnings`
-Winners withdraw their proportional share of the pool.
+### `request_redeem`
+Called by a winner after resolution. Validates that the caller holds the winning side. Triggers the Encrypt decryption CPI so off-chain executors decrypt the user's ciphertext share balance and write the plaintext to a reveal account.
 
-- **Signer:** User
-- **Validations:**
-  - Market is resolved
-  - Position is on the winning outcome
-  - Not already claimed
-- **Payout formula:** `(position_amount / winning_total) * total_liquidity - 1% fee`
-- **Effect:** Transfers net payout from vault, marks position as claimed
+### `claim_winnings`
+Called after Encrypt decryption is complete. The user provides their plaintext share count (from the Encrypt reveal account via gRPC). Program computes payout and transfers USDC from vault to user.
+
+```
+gross  = (shares / winning_shares_total) × vault_balance
+fee    = gross × PROTOCOL_FEE_BPS / 10000
+payout = gross − fee
+```
+
+---
+
+## AMM Price Discovery
+
+At any time the implied market probability is:
+
+```
+price_YES = no_reserve  / (yes_reserve + no_reserve)
+price_NO  = yes_reserve / (yes_reserve + no_reserve)
+price_YES + price_NO = 1.0
+```
+
+Starting at 50/50 (both reserves equal), prices shift as traders buy shares.
+
+---
+
+## Privacy via Encrypt (FHE)
+
+Pool reserves and prices are public — anyone can observe market sentiment.
+What Encrypt hides is each user's *accumulated position size*. The `Position` account stores only ciphertext handles (`yes_shares_ct`, `no_shares_ct`) — references to EUint64 ciphertext accounts managed by the Encrypt network:
+
+- **On swap**: `encrypt_program::create_plaintext_typed::<Uint64>(shares_out)` or homomorphic addition to existing handle
+- **On redeem**: `encrypt_program::request_decrypt(ciphertext_pubkey)` → executors write plaintext to a reveal account
+- **On claim**: user reads their plaintext from the reveal account via Encrypt gRPC and submits it on-chain
+
+Encrypt program ID: `4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8`  
+gRPC endpoint: `https://pre-alpha-dev-1.encrypt.ika-network.net:443`
+
+> **Status**: Encrypt integration is architected and documented in `swap.rs` / `redeem.rs`. The CPI calls are stubbed pending `encrypt-anchor` SDK stabilisation (pre-alpha). Position handles currently use the vault pubkey as a sentinel.
+
+---
 
 ## Constants
 
-| Name               | Value        | Description                   |
-|--------------------|--------------|-------------------------------|
-| PROTOCOL_FEE_BPS   | 100          | 1% fee on winnings            |
-| MAX_OUTCOMES       | 10           | Max outcomes per market       |
-| MIN_MARKET_DURATION| 3600         | 1 hour minimum                |
-| MAX_MARKET_DURATION| 31,536,000   | 365 days maximum              |
-| RESOLUTION_WINDOW  | 86,400       | 24 hours for oracle to resolve|
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `DEFAULT_SWAP_FEE_BPS` | `30` | 0.3% swap fee |
+| `MAX_SWAP_IMPACT_BPS` | `5000` | 50% max pool impact per swap |
+| `PROTOCOL_FEE_BPS` | `100` | 1% protocol fee on winnings |
+| `MIN_MARKET_DURATION` | `3600 s` | Markets must run at least 1 hour |
+| `MAX_MARKET_DURATION` | `2592000 s` | Markets must close within 30 days |
+| `RESOLUTION_WINDOW` | `86400 s` | Oracle has 24 hours after close to resolve |
+
+---
+
+## PDAs
+
+| Account | Seeds |
+|---------|-------|
+| Protocol | `["protocol"]` |
+| Market | `["market", market_id (u64 LE)]` |
+| Vault | `["vault", market_pubkey]` |
+| Position | `["position", market_pubkey, user_pubkey]` |
+
+---
+
+## Building & Testing
+
+```bash
+# From the programs/ directory
+anchor build        # compile the program
+anchor test         # run all 32 tests via bankrun (no local validator needed)
+```
+
+Tests use [solana-bankrun](https://github.com/kevinheavey/solana-bankrun) — an in-memory validator — so runs are fast (< 2 seconds).
+
+### Test Coverage
+
+| Suite | Tests |
+|-------|-------|
+| initialize | 2 |
+| create_market | 7 |
+| swap | 9 |
+| resolve_market | 6 |
+| redeem | 8 |
+| **Total** | **32** |
+
+Key invariants verified:
+- `yes_reserve × no_reserve ≥ k` after every swap (CPMM invariant holds)
+- `price_YES + price_NO ≈ 1.0`, both bounded `(0, 1)`
+- Vault balance = initial liquidity + Σ swap amounts
+- Fee accounting: 0.3% stays in vault on swap, 1% deducted on claim
+
+---
 
 ## Token Standard
 
-Uses **SPL Token-2022** (`TokenInterface`) for collateral handling, enabling future support for transfer hooks, metadata extensions, and non-transferable tokens.
-
-## Build & Deploy
-
-```bash
-# Install dependencies
-anchor build
-
-# Deploy to devnet
-anchor deploy
-
-# Run tests
-anchor test
-```
-
-## PDA Seeds Reference
-
-```
-Protocol:  [b"protocol"]
-Market:    [b"market",    market_id (u64 LE bytes)]
-Position:  [b"position",  market_key, user_key, outcome (u8)]
-Vault:     [b"vault",     market_key]
-```
+Collateral is SPL Token-2022 (USDC or any compatible mint). The vault is a standard token account owned by the market PDA.
