@@ -20,12 +20,9 @@ anchor-debug = []
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.31.1", features = ["token_2022"] }
-# Encrypt (FHE) integration — pre-alpha, enable when packages are published:
-# encrypt-types  = { git = "https://github.com/dwallet-labs/encrypt-pre-alpha" }
-# encrypt-dsl    = { package = "encrypt-solana-dsl", git = "https://github.com/dwallet-labs/encrypt-pre-alpha" }
-# encrypt-anchor = { git = "https://github.com/dwallet-labs/encrypt-pre-alpha" }
-# When enabled: replace yes_shares_ct/no_shares_ct (Pubkey) with EUint64 handles
-# and wire the CPI calls in swap.rs and redeem.rs
+# Pin blake3 < 1.8 — platform-tools v1.51 (Rust 1.84) can't build edition2024.
+# Remove once platform-tools is updated to v1.52+ (Rust 1.85+).
+blake3 = ">=1.5, <1.8"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

@@ -30,8 +30,6 @@ pub struct Swap<'info> {
     )]
     pub market: Account<'info, Market>,
 
-    /// One position per user per market (no outcome byte in seed — user holds
-    /// both YES and NO share ciphertexts in a single Position account).
     #[account(
         init_if_needed,
         payer = user,
@@ -64,30 +62,12 @@ pub fn handler(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
 
-    // ── Validation ─────────────────────────────────────────────────────────
     require!(market.status == MarketStatus::Active, PredibergError::MarketNotActive);
     require!(clock.unix_timestamp < market.end_time, PredibergError::MarketEnded);
     require!(params.outcome == YES || params.outcome == NO, PredibergError::InvalidOutcome);
     require!(params.amount > 0, PredibergError::InvalidAmount);
 
-    // ── CPMM Calculation ───────────────────────────────────────────────────
-    //
-    // Buying YES:
-    //   - User adds USDC to the NO side (increases NO pressure → raises YES price)
-    //   - new_no_reserve  = no_reserve  + amount_in
-    //   - new_yes_reserve = k / new_no_reserve
-    //   - shares_out      = yes_reserve - new_yes_reserve
-    //
-    // Buying NO:  symmetric — add to YES side, shares come from NO side
-    //
-    // Fee: deducted from amount before pool update. Stays in vault.
-    //
-    // Encrypt (FHE): shares_out is computed as a public u64 here (the input
-    // amount is a visible token transfer). We then create/update the user's
-    // encrypted ciphertext account via Encrypt CPI so that the accumulated
-    // position balance cannot be queried on-chain.
-    // See: https://docs.encrypt.xyz
-
+    // ── CPMM ──────────────────────────────────────────────────────────────
     let fee = (params.amount as u128)
         .checked_mul(market.swap_fee_bps as u128)
         .ok_or(PredibergError::Overflow)?
@@ -102,7 +82,6 @@ pub fn handler(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
     require!(k > 0, PredibergError::ZeroLiquidity);
 
     let shares_out: u64 = if params.outcome == YES {
-        // Buying YES: amount_in goes into NO side
         let new_no = (market.no_reserve as u128)
             .checked_add(amount_in as u128)
             .ok_or(PredibergError::Overflow)?;
@@ -113,7 +92,6 @@ pub fn handler(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
             .checked_sub(new_yes)
             .ok_or(PredibergError::InsufficientLiquidity)? as u64;
 
-        // Enforce max impact: no single swap takes more than MAX_SWAP_IMPACT_BPS of pool
         let max_out = (market.yes_reserve as u128)
             .checked_mul(MAX_SWAP_IMPACT_BPS as u128)
             .ok_or(PredibergError::Overflow)?
@@ -128,7 +106,6 @@ pub fn handler(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
             .ok_or(PredibergError::Overflow)?;
         shares
     } else {
-        // Buying NO: amount_in goes into YES side
         let new_yes = (market.yes_reserve as u128)
             .checked_add(amount_in as u128)
             .ok_or(PredibergError::Overflow)?;
@@ -156,7 +133,7 @@ pub fn handler(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
 
     require!(shares_out > 0, PredibergError::InsufficientLiquidity);
 
-    // ── Transfer collateral: user → vault ──────────────────────────────────
+    // ── Transfer collateral: user → vault ─────────────────────────────────
     transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
@@ -171,57 +148,25 @@ pub fn handler(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
         ctx.accounts.collateral_mint.decimals,
     )?;
 
-    market.total_liquidity = market.total_liquidity
-        .checked_add(params.amount)
-        .ok_or(PredibergError::Overflow)?;
-
-    // ── Initialise position if new ─────────────────────────────────────────
+    // ── Init or update position ────────────────────────────────────────────
     let position = &mut ctx.accounts.position;
     if position.market == Pubkey::default() {
         position.market = market.key();
         position.owner = ctx.accounts.user.key();
-        position.yes_shares_ct = Position::zero_ct();
-        position.no_shares_ct = Position::zero_ct();
+        position.yes_shares = 0;
+        position.no_shares = 0;
         position.redeemed = false;
         position.bump = ctx.bumps.position;
     }
 
-    // ── Encrypt (FHE): update encrypted position balance ──────────────────
-    //
-    // The `shares_out` value is computed from public inputs (pool state +
-    // transfer amount), so it is deterministic and known to observers of this
-    // transaction. What Encrypt hides is the USER'S ACCUMULATED TOTAL across
-    // all their swaps — no one can query the Position account and learn the
-    // total exposure of any address.
-    //
-    // Integration steps (Encrypt pre-alpha, devnet):
-    //   Endpoint: https://pre-alpha-dev-1.encrypt.ika-network.net:443
-    //   Program:  4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8
-    //
-    //   If position has no existing ciphertext for this side:
-    //     encrypt_program::create_plaintext_typed::<Uint64>(shares_out)
-    //     → new ciphertext pubkey stored in position.yes_shares_ct (or no_shares_ct)
-    //
-    //   If position already has a ciphertext:
-    //     #[encrypt_fn]
-    //     fn accumulate(current: EUint64, delta: EUint64) -> EUint64 {
-    //         current + delta
-    //     }
-    //     → output ciphertext pubkey replaces old handle in position
-    //
-    // The EncryptContext CPI accounts (encrypt_program, system_program,
-    // payer, etc.) would be passed as remaining_accounts in production.
-    // Stubbed here pending Anchor 0.32 / encrypt-anchor stabilisation.
-    //
-    // ── Stub (pre-alpha): mark the ciphertext slot as non-empty ───────────
-    // In lieu of a real EUint64 handle, set the handle to the vault pubkey
-    // (a stable non-zero sentinel) so that `has_yes_shares()` / `has_no_shares()`
-    // correctly signal ownership. Replace with the Encrypt CPI output when the
-    // SDK is stable.
     if params.outcome == YES {
-        position.yes_shares_ct = ctx.accounts.vault.key();
+        position.yes_shares = position.yes_shares
+            .checked_add(shares_out)
+            .ok_or(PredibergError::Overflow)?;
     } else {
-        position.no_shares_ct = ctx.accounts.vault.key();
+        position.no_shares = position.no_shares
+            .checked_add(shares_out)
+            .ok_or(PredibergError::Overflow)?;
     }
 
     msg!(

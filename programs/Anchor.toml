@@ -24,14 +24,5 @@ wallet = "~/.config/solana/id.json"
 [scripts]
 test = "RUST_LOG=error yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
-[test]
-startup_wait = 5000
-
-[test.validator]
-url = "https://api.devnet.solana.com"
-
-[[test.validator.clone]]
-address = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-
 [workspace]
 members = ["programs/*"]

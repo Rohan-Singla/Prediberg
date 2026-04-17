@@ -28,12 +28,10 @@ pub struct Initialize<'info> {
 pub fn handler(ctx: Context<Initialize>, config: InitializeConfig) -> Result<()> {
     let protocol = &mut ctx.accounts.protocol;
     protocol.authority = ctx.accounts.authority.key();
-    protocol.oracle = config.oracle;
-    protocol.treasury = config.treasury;
-    protocol.fee_bps = PROTOCOL_FEE_BPS;
-    protocol.total_markets = 0;
-    protocol.total_volume = 0;
-    protocol.bump = ctx.bumps.protocol;
+    protocol.oracle    = config.oracle;
+    protocol.treasury  = config.treasury;
+    protocol.fee_bps   = PROTOCOL_FEE_BPS;
+    protocol.bump      = ctx.bumps.protocol;
 
     msg!("Protocol initialized");
     Ok(())

@@ -23,7 +23,7 @@ pub mod prediberg {
         instructions::create_market::handler(ctx, params)
     }
 
-    /// Buy YES or NO shares via the CPMM. Encrypted position updated via Encrypt FHE.
+    /// Buy YES or NO shares via the CPMM.
     pub fn swap(ctx: Context<Swap>, params: SwapParams) -> Result<()> {
         instructions::swap::handler(ctx, params)
     }
@@ -33,13 +33,18 @@ pub mod prediberg {
         instructions::resolve_market::handler(ctx, params)
     }
 
-    /// Step 1 of redemption: request Encrypt decryption of the user's position.
+    /// Step 1: Verify the caller holds the winning side.
     pub fn request_redeem(ctx: Context<RequestRedeem>) -> Result<()> {
         instructions::redeem::request_redeem_handler(ctx)
     }
 
-    /// Step 2 of redemption: claim payout using the decrypted share count.
-    pub fn claim_winnings(ctx: Context<ClaimWinnings>, params: ClaimWinningsParams) -> Result<()> {
-        instructions::redeem::claim_winnings_handler(ctx, params)
+    /// Step 2: Transfer net payout to user; protocol fee stays in vault.
+    pub fn claim_winnings(ctx: Context<ClaimWinnings>) -> Result<()> {
+        instructions::redeem::claim_winnings_handler(ctx)
+    }
+
+    /// Authority withdraws accumulated fees from a resolved market's vault.
+    pub fn withdraw_fees(ctx: Context<WithdrawFees>) -> Result<()> {
+        instructions::withdraw_fees::handler(ctx)
     }
 }

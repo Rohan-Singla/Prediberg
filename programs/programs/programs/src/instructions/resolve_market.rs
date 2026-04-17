@@ -42,8 +42,7 @@ pub fn handler(ctx: Context<ResolveMarket>, params: ResolveMarketParams) -> Resu
     require!(params.winning_outcome <= 1, PredibergError::InvalidOutcome);
 
     market.winning_outcome = Some(params.winning_outcome);
-    market.status = MarketStatus::Resolved;
-    market.resolution_time = clock.unix_timestamp;
+    market.status          = MarketStatus::Resolved;
 
     msg!("Market {} resolved -> outcome {}", market.id, params.winning_outcome);
     Ok(())

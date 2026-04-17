@@ -32,4 +32,5 @@ pub enum PredibergError {
     ZeroLiquidity,
     #[msg("Overflow")]
     Overflow,
+
 }

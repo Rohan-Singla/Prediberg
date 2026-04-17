@@ -207,15 +207,11 @@ const INIT_LIQ   = 10_000 * ONE_UNIT;   // default initial liquidity per market
 const SWAP_FEE   = 30;                   // 0.3 %
 
 async function createMarket(params: {
-  question?:          string;
-  description?:       string;
-  yesLabel?:          string;
-  noLabel?:           string;
-  endTime?:           typeof BN.prototype;
-  initialLiquidity?:  typeof BN.prototype;
-  swapFeeBps?:        number | null;
-  signer?:            Keypair;
-  signerToken?:       PublicKey;
+  endTime?:          typeof BN.prototype;
+  initialLiquidity?: typeof BN.prototype;
+  swapFeeBps?:       number | null;
+  signer?:           Keypair;
+  signerToken?:      PublicKey;
 } = {}) {
   const [protocol] = protocolPda();
   const state      = await program.account.protocol.fetch(protocol);
@@ -228,23 +224,19 @@ async function createMarket(params: {
 
   await program.methods
     .createMarket({
-      question:          params.question          ?? 'Will BTC exceed $150k by July 2026?',
-      description:       params.description       ?? 'Resolves YES if BTC >= $150k on Coinbase.',
-      yesLabel:          params.yesLabel           ?? 'YES',
-      noLabel:           params.noLabel            ?? 'NO',
       endTime,
-      initialLiquidity:  params.initialLiquidity   ?? new BN(INIT_LIQ),
-      swapFeeBps:        params.swapFeeBps !== undefined ? params.swapFeeBps : SWAP_FEE,
+      initialLiquidity: params.initialLiquidity ?? new BN(INIT_LIQ),
+      swapFeeBps:       params.swapFeeBps !== undefined ? params.swapFeeBps : SWAP_FEE,
     })
     .accounts({
-      creator:              signer.publicKey,
+      creator:             signer.publicKey,
       protocol,
       market,
       collateralMint,
       vault,
-      creatorTokenAccount:  signerTok,
-      tokenProgram:         TOKEN_2022_PROGRAM_ID,
-      systemProgram:        SystemProgram.programId,
+      creatorTokenAccount: signerTok,
+      tokenProgram:        TOKEN_2022_PROGRAM_ID,
+      systemProgram:       SystemProgram.programId,
     })
     .signers([signer])
     .rpc();
@@ -305,18 +297,15 @@ async function claimWinnings(
   user:      Keypair,
   userToken: PublicKey,
   marketId:  number,
-  shares:    number,
 ) {
-  const [protocol] = protocolPda();
   const [market]   = marketPda(marketId);
   const [vault]    = vaultPda(market);
   const [position] = positionPda(market, user.publicKey);
 
   await program.methods
-    .claimWinnings({ shares: new BN(shares) })
+    .claimWinnings()
     .accounts({
       user:             user.publicKey,
-      protocol,
       market,
       position,
       userTokenAccount: userToken,
@@ -348,7 +337,6 @@ describe('initialize', () => {
     expect(state.treasury.toString()).to.equal(treasury.publicKey.toString());
     expect(state.feeBps).to.equal(100);
     expect(state.totalMarkets.toNumber()).to.equal(0);
-    expect(state.totalVolume.toNumber()).to.equal(0);
   });
 
   it('blocks double init', async () => {
@@ -367,29 +355,20 @@ describe('initialize', () => {
 
 describe('create_market', () => {
   it('creates market with correct AMM initial state (50/50)', async () => {
-    const { id, market, vault } = await createMarket({
-      question:         'Will BTC exceed $150k by July 2026?',
-      initialLiquidity: new BN(INIT_LIQ),
-    });
+    const { id, market, vault } = await createMarket({ initialLiquidity: new BN(INIT_LIQ) });
 
     const mkt = await program.account.market.fetch(market);
 
     expect(mkt.id.toNumber()).to.equal(id);
-    expect(mkt.creator.toString()).to.equal(authority.publicKey.toString());
-    expect(mkt.question).to.equal('Will BTC exceed $150k by July 2026?');
-    expect(mkt.yesLabel).to.equal('YES');
-    expect(mkt.noLabel).to.equal('NO');
     expect(mkt.status).to.deep.equal({ active: {} });
     expect(mkt.winningOutcome).to.be.null;
 
-    // AMM: 50/50 pool
     expect(mkt.yesReserve.toNumber()).to.equal(INIT_LIQ);
     expect(mkt.noReserve.toNumber()).to.equal(INIT_LIQ);
     expect(mkt.yesSharesTotal.toNumber()).to.equal(0);
     expect(mkt.noSharesTotal.toNumber()).to.equal(0);
     expect(mkt.swapFeeBps).to.equal(30);
 
-    // Vault holds initial_liquidity
     const vaultBal = await getTokenBalance(provider, vault);
     expect(vaultBal).to.equal(INIT_LIQ);
   });
@@ -404,7 +383,7 @@ describe('create_market', () => {
   it('increments totalMarkets counter', async () => {
     const [protocol] = protocolPda();
     const before = (await program.account.protocol.fetch(protocol)).totalMarkets.toNumber();
-    await createMarket({ question: 'Counter test' });
+    await createMarket();
     const after = (await program.account.protocol.fetch(protocol)).totalMarkets.toNumber();
     expect(after).to.equal(before + 1);
   });
@@ -413,8 +392,8 @@ describe('create_market', () => {
     const [protocol] = protocolPda();
     const startId = (await program.account.protocol.fetch(protocol)).totalMarkets.toNumber();
 
-    const { market: m1 } = await createMarket({ question: 'Seq A' });
-    const { market: m2 } = await createMarket({ question: 'Seq B' });
+    const { market: m1 } = await createMarket();
+    const { market: m2 } = await createMarket();
 
     const s1 = await program.account.market.fetch(m1);
     const s2 = await program.account.market.fetch(m2);
@@ -442,10 +421,6 @@ describe('create_market', () => {
       () =>
         program.methods
           .createMarket({
-            question:         'Too short',
-            description:      '',
-            yesLabel:         'YES',
-            noLabel:          'NO',
             endTime:          new BN(t + 1800), // 30 min
             initialLiquidity: new BN(INIT_LIQ),
             swapFeeBps:       30,
@@ -473,10 +448,6 @@ describe('create_market', () => {
       () =>
         program.methods
           .createMarket({
-            question:         'Zero liq',
-            description:      '',
-            yesLabel:         'YES',
-            noLabel:          'NO',
             endTime:          new BN(t + ONE_HOUR + 300),
             initialLiquidity: new BN(0),
             swapFeeBps:       30,
@@ -704,7 +675,6 @@ describe('resolve_market', () => {
 
     expect(mkt.status).to.deep.equal({ resolved: {} });
     expect(mkt.winningOutcome).to.equal(0);
-    expect(mkt.resolutionTime.toNumber()).to.be.greaterThan(0);
   });
 
   it('blocks double resolution', async () => {
@@ -715,10 +685,8 @@ describe('resolve_market', () => {
   });
 
   it('blocks resolution before end_time', async () => {
-    // Create a fresh market in the future
     const { id } = await createMarket({
-      question: 'Resolve-before-end test',
-      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+      endTime: new BN((await now(context)) + ONE_HOUR + 300),
     });
 
     await expectFail(
@@ -728,10 +696,8 @@ describe('resolve_market', () => {
   });
 
   it('blocks resolution after 24h window', async () => {
-    // Create a fresh market, warp past end + 25h
     const { id, market } = await createMarket({
-      question: 'Window-expired test',
-      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+      endTime: new BN((await now(context)) + ONE_HOUR + 300),
     });
 
     const mkt    = await program.account.market.fetch(market);
@@ -756,8 +722,7 @@ describe('redeem', () => {
   before(async () => {
     // Create a fresh market, let userA buy YES, then resolve YES wins
     const { id, market } = await createMarket({
-      question: 'Redeem test market',
-      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+      endTime: new BN((await now(context)) + ONE_HOUR + 300),
     });
     redeemMarketId = id;
 
@@ -775,7 +740,7 @@ describe('redeem', () => {
   it('blocks redeem on unresolved market', async () => {
     // Create a market, buy shares so the position exists, then try to redeem
     // before the market is resolved — should fail with MarketNotActive.
-    const { id, market } = await createMarket({ question: 'Unresolved redeem test' });
+    const { id, market } = await createMarket();
     await swap(userA, userAToken, id, YES, BUY_A);
 
     const [position] = positionPda(market, userA.publicKey);
@@ -798,8 +763,7 @@ describe('redeem', () => {
 
     // Create a second redeem market for the loser test
     const { id, market } = await createMarket({
-      question: 'Loser redeem test',
-      endTime:  new BN((await now(context)) + ONE_HOUR + 300),
+      endTime: new BN((await now(context)) + ONE_HOUR + 300),
     });
 
     await swap(userA, userAToken, id, YES, BUY_A);
@@ -835,17 +799,16 @@ describe('redeem', () => {
     const vaultBalance    = await getTokenBalance(provider, vault);
     const yesSharesTotal  = mkt.yesSharesTotal.toNumber();
 
-    // Get userA's YES shares total from market (public counter)
-    // In production, userA would get share count from Encrypt gRPC reveal
-    // Here: userA is the only YES buyer, so their shares == yes_shares_total
-    const userShares = yesSharesTotal;
+    const [position] = positionPda(market, userA.publicKey);
+    const pos        = await program.account.position.fetch(position);
+    const userShares = pos.yesShares.toNumber();
 
     const gross = Math.floor((userShares * vaultBalance) / yesSharesTotal);
     const fee   = Math.floor((gross * 100) / 10_000);  // 1% protocol fee
     const net   = gross - fee;
 
     const userBefore = await getTokenBalance(provider, userAToken);
-    await claimWinnings(userA, userAToken, redeemMarketId, userShares);
+    await claimWinnings(userA, userAToken, redeemMarketId);
     const userAfter  = await getTokenBalance(provider, userAToken);
 
     expect(userAfter - userBefore).to.equal(net);
@@ -869,12 +832,8 @@ describe('redeem', () => {
   });
 
   it('blocks double claim', async () => {
-    const [market]    = marketPda(redeemMarketId);
-    const mkt         = await program.account.market.fetch(market);
-    const yesShTotal  = mkt.yesSharesTotal.toNumber();
-
     await expectFail(
-      () => claimWinnings(userA, userAToken, redeemMarketId, yesShTotal),
+      () => claimWinnings(userA, userAToken, redeemMarketId),
       'AlreadyRedeemed',
     );
   });

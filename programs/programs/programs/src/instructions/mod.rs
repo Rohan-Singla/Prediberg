@@ -3,9 +3,11 @@ pub mod create_market;
 pub mod swap;
 pub mod resolve_market;
 pub mod redeem;
+pub mod withdraw_fees;
 
 pub use initialize::*;
 pub use create_market::*;
 pub use swap::*;
 pub use resolve_market::*;
 pub use redeem::*;
+pub use withdraw_fees::*;

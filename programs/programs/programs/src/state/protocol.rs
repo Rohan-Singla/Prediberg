@@ -8,6 +8,5 @@ pub struct Protocol {
     pub treasury: Pubkey,
     pub fee_bps: u16,
     pub total_markets: u64,
-    pub total_volume: u64,
     pub bump: u8,
 }
